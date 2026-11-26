@@ -1,4 +1,4 @@
-"""待确认操作 confirm 行为对齐 Java（含执行前 CAS 状态落定闭环）。"""
+"""Existing confirmation scenarios, updated for T04 result retention and explicit states."""
 
 import json
 from unittest.mock import AsyncMock, patch
@@ -27,7 +27,7 @@ def _redis_stub(success_cas: bool = True):
 
 
 @pytest.mark.asyncio
-async def test_confirm_success_deletes_pending(service):
+async def test_confirm_success_retains_pending_result(service):
     pending = {
         "token": "act_test",
         "userId": "u1",
@@ -48,14 +48,16 @@ async def test_confirm_success_deletes_pending(service):
     assert action_type == "CONFIRM_RECEIPT"
     assert ok is True
     assert "确认收货" in msg
-    # CAS 先落 CONFIRMED，成功后再删除
-    redis.cas_pending_status.assert_awaited_with("act_test", 0, 1)
-    redis.delete_pending_action.assert_awaited_once_with("act_test")
+    # EXECUTING precedes Java; success and message are retained for duplicate confirms.
+    redis.cas_pending_status.assert_any_await("act_test", 0, 4, ttl_seconds=service.RESULT_TTL)
+    redis.cas_pending_status.assert_any_await("act_test", 4, 1, ttl_seconds=service.RESULT_TTL,
+                                            fields={"resultMessage": "订单 o1 已确认收货"})
+    redis.delete_pending_action.assert_not_awaited()
     redis.clear_pending_executing.assert_awaited_once_with("act_test")
 
 
 @pytest.mark.asyncio
-async def test_confirm_delete_failed_status_already_confirmed(service):
+async def test_confirm_ignores_delete_failure_by_retaining_verified_result(service):
     pending = {"token": "act_del", "userId": "u1", "actionType": "REFUND", "status": 0}
 
     async def executor(_):
@@ -67,14 +69,14 @@ async def test_confirm_delete_failed_status_already_confirmed(service):
         with patch("app.services.pending_action_service.redis_service", redis):
             action_type, ok, msg = await service.confirm("u1", "act_del", executor)
 
-    assert ok is False
-    assert "刷新" in msg
-    # 双失败窗口消除：状态已在执行前 CAS 落定为 CONFIRMED，无需补写
-    redis.cas_pending_status.assert_called_once()
+    assert ok is True
+    assert msg == "已提交退款"
+    redis.delete_pending_action.assert_not_awaited()
+    assert redis.cas_pending_status.await_count == 2
 
 
 @pytest.mark.asyncio
-async def test_confirm_failure_rolls_back_status(service):
+async def test_confirm_explicit_failure_retains_failed_status(service):
     pending = {
         "token": "act_fail",
         "userId": "u1",
@@ -94,13 +96,14 @@ async def test_confirm_failure_rolls_back_status(service):
     assert action_type == "REFUND"
     assert ok is False
     assert "退款失败" in msg
-    # 业务失败：回滚 CONFIRMED→PENDING（允许用户修正后重试），不删除 pending
-    redis.cas_pending_status.assert_any_await("act_fail", 1, 0)
+    # Explicit rejection is FAILED, not a fresh PENDING proposal.
+    redis.cas_pending_status.assert_any_await("act_fail", 4, 5, ttl_seconds=service.RESULT_TTL,
+                                            fields={"resultMessage": "退款失败：订单状态不允许"})
     redis.delete_pending_action.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_confirm_system_error_keeps_confirmed(service):
+async def test_confirm_system_error_keeps_unknown(service):
     pending = {"token": "act_sys", "userId": "u1", "actionType": "REFUND", "status": 0}
 
     async def executor(_):
@@ -112,9 +115,9 @@ async def test_confirm_system_error_keeps_confirmed(service):
             action_type, ok, msg = await service.confirm("u1", "act_sys", executor)
 
     assert ok is False
-    assert "系统处理异常" in msg
-    # 系统异常不回滚（executor 可能已执行写操作）：重试被 CONFIRMED 状态拒绝，防二次执行
-    redis.cas_pending_status.assert_called_once()
+    assert "核实" in msg
+    redis.cas_pending_status.assert_any_await("act_sys", 4, 6, ttl_seconds=service.RESULT_TTL,
+                                            fields={"resultMessage": "正在核实结果，请查询进度；请勿重复申请"})
     redis.delete_pending_action.assert_not_awaited()
 
 
@@ -128,17 +131,21 @@ async def test_confirm_cas_rejected(service):
     redis = _redis_stub(success_cas=False)  # 并发其他请求已落定
     with patch.object(service, "load_owned", AsyncMock(return_value=pending)):
         with patch("app.services.pending_action_service.redis_service", redis):
-            with pytest.raises(ValueError, match="已处理|已过期"):
-                await service.confirm("u1", "act_cas", executor)
+            result = await service.confirm("u1", "act_cas", executor)
+            assert result.status == service.STATUS_EXECUTING
+            assert result.success is False
 
 
 @pytest.mark.asyncio
 async def test_confirm_idempotent_on_processed(service):
-    pending = {"token": "act_done", "userId": "u1", "status": 1}
+    pending = {"token": "act_done", "userId": "u1", "status": 1, "resultMessage": "已提交"}
 
     redis = _redis_stub()
     with patch.object(service, "load_owned", AsyncMock(return_value=pending)):
         with patch("app.services.pending_action_service.redis_service", redis):
-            with pytest.raises(ValueError, match="已处理"):
-                await service.confirm("u1", "act_done", AsyncMock())
+            executor = AsyncMock()
+            result = await service.confirm("u1", "act_done", executor)
+            assert result.success is True
+            assert result.message == "已提交"
+            executor.assert_not_awaited()
             redis.try_mark_pending_executing.assert_not_awaited()

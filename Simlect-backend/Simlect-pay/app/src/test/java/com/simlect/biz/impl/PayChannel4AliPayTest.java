@@ -83,6 +83,7 @@ class PayChannel4AliPayTest {
         when(appConfig.getAlipayRootCertPath()).thenReturn("rootCert.crt");
         when(appConfig.getAlipayServerUrl()).thenReturn("https://openapi.alipay.com/gateway.do");
         when(appConfig.getAlipayAppid()).thenReturn("20210001");
+        when(appConfig.getAlipaySellerId()).thenReturn("2088000000000001");
         when(appConfig.getAlipayAppPrivateKey()).thenReturn("private-key");
     }
 
@@ -239,6 +240,10 @@ class PayChannel4AliPayTest {
     private Map<String, String> notifyParams(String status) {
         Map<String, String> params = new HashMap<>();
         params.put("sign_type", "RSA2");
+        params.put("sign", "mock-signature");
+        params.put("app_id", "20210001");
+        params.put("seller_id", "2088000000000001");
+        params.put("total_amount", "100.00");
         params.put("out_trade_no", PAY_ORDER_ID);
         params.put("trade_no", CHANNEL_ORDER_ID);
         params.put("trade_status", status);
@@ -340,6 +345,8 @@ class PayChannel4AliPayTest {
         when(queryResp.isSuccess()).thenReturn(true);
         when(queryResp.getTradeStatus()).thenReturn("TRADE_SUCCESS");
         when(queryResp.getTradeNo()).thenReturn(CHANNEL_ORDER_ID);
+        when(queryResp.getOutTradeNo()).thenReturn(PAY_ORDER_ID);
+        when(queryResp.getTotalAmount()).thenReturn("100.00");
         try (MockedConstruction<DefaultAlipayClient> construction =
                      mockAlipayClient(mock(AlipayTradePagePayResponse.class), mock(AlipayTradeWapPayResponse.class),
                              queryResp, mock(AlipayTradeRefundResponse.class), mock(AlipayTradeCloseResponse.class))) {
@@ -348,6 +355,7 @@ class PayChannel4AliPayTest {
 
             assertEquals(PAY_ORDER_ID, dto.getPayOrderId());
             assertEquals(CHANNEL_ORDER_ID, dto.getChannelOrderId());
+            assertEquals(new BigDecimal("100.00"), dto.getTotalAmount());
         }
     }
 

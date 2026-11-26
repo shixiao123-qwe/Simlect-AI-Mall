@@ -175,7 +175,7 @@ async def confirm_action(
     actionToken: str = Form(...),  # 待确认操作的 token（由 LLM 确认卡下发，一次性）
     user: TokenUserInfo = Depends(require_login),
 ) -> ResponseVO:
-    """用户点击确认卡：执行下单/改地址等写操作（调 Java 后端）。"""
+    """用户确认原提案；不确定结果先查询，再决定是否允许原请求重试。"""
 
     if not await rate_limit_service.allow(user.user_id, "confirmAction", 1, 3):
         # Redis 滑动窗口：3 秒内最多 1 次 confirm（与装饰器限流双保险）
@@ -191,12 +191,16 @@ async def confirm_action(
         return await action_execute_service.execute(pending, token)  # pending≈Map，含 actionType、参数等
 
     try:
-        action_type, ok, msg = await pending_action_service.confirm(
-            user.user_id, actionToken, executor  # 校验 token 后调用 executor
-        )
+        result = await pending_action_service.confirm(
+            user.user_id, actionToken, executor,
+            resolver=lambda pending: action_execute_service.recover(pending, token))
+        action_type, ok, msg = result
         return success({
             "actionType": action_type,  # 如 PLACE_ORDER、UPDATE_ADDRESS
             "success": ok,  # Java 侧是否执行成功
+            "status": result.status,
+            "actionStatus": pending_action_service.STATUS_NAMES[result.status],
+            "retryAllowed": result.retry_allowed,
             "resultMessage": msg,  # 给用户看的结果文案
         })
     except ValueError as e:
@@ -204,8 +208,27 @@ async def confirm_action(
         return success({
             "actionType": None,
             "success": False,
+            "status": pending_action_service.STATUS_EXPIRED if "过期" in str(e) else None,
+            "actionStatus": "EXPIRED" if "过期" in str(e) else None,
             "resultMessage": str(e),  # 异常消息直接返回前端展示
         })
+
+
+@router.post("/getActionResult")
+@limiter.limit("3/second", key_func=_user_key)
+async def get_action_result(request: Request, actionToken: str = Form(...),
+                            user: TokenUserInfo = Depends(require_login)) -> ResponseVO:
+    token = get_request_token(request) or user.token or ""
+    try:
+        result = await pending_action_service.confirm(user.user_id, actionToken, None,
+            resolver=lambda pending: action_execute_service.recover(pending, token), recover_only=True)
+        return success({"actionType": result.action_type, "success": result.success,
+                        "status": result.status, "actionStatus": pending_action_service.STATUS_NAMES[result.status],
+                        "retryAllowed": result.retry_allowed, "resultMessage": result.message})
+    except ValueError as error:
+        return success({"success": False, "status": 3 if "过期" in str(error) else None,
+                        "actionStatus": "EXPIRED" if "过期" in str(error) else None,
+                        "resultMessage": str(error)})
 
 
 @router.post("/cancelAction")
@@ -223,7 +246,7 @@ async def cancel_action(
             "resultMessage": "操作过于频繁，请稍后再试",
         })
     try:
-        await pending_action_service.cancel(user.user_id, actionToken)  # 仅删 Redis pending，不调 Java
+        await pending_action_service.cancel(user.user_id, actionToken)  # CAS 保留取消结果，不调 Java
         return success(None)  # 取消成功，无额外 data
     except ValueError as e:
         return success({

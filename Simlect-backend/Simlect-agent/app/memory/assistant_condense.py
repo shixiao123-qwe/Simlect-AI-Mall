@@ -7,6 +7,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.config.settings import get_settings
 from app.services.llm_factory import create_memory_llm
+from app.utils.llm_content import llm_text
 from app.services.redis_service import redis_service
 
 logger = structlog.get_logger()
@@ -45,7 +46,7 @@ async def condense_assistant_for_history(text: str, max_len: int | None = None) 
                 ),
             ]
         )
-        content = response.content if isinstance(response.content, str) else str(response.content or "")
+        content = llm_text(response.content)
         condensed = content.strip()
         if condensed and len(condensed) <= limit + 50:
             return condensed[:limit]

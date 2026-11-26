@@ -38,6 +38,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 @FeignClient(name = "simlect-stock", contextId = "stockFeignClient", path = "/internal/stock",
         fallbackFactory = StockFeignFallbackFactory.class)
 public interface StockFeignClient {
+    @PostMapping("/readBatch")
+    ResponseVO<java.util.List<SkuStockDTO>> readBatch(@RequestBody com.simlect.api.dto.StockReadBatchDTO dto);
 
     @PostMapping("/get")
     ResponseVO<SkuStockDTO> getStock(@RequestBody SkuStockQueryDTO dto);

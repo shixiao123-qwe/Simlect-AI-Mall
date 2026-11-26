@@ -516,11 +516,17 @@ onMounted(() => {
       if (!answering.value) {
         input.value = presetMsg;
         adjustTextareaHeight();
-        sendMessage();
       }
     }, 400);
   }
 });
+
+watch(() => pcAgentPanel.presetMessage, (message) => {
+  if (!composerEmbedded || !message) return;
+  // Draft only: opening a suggestion never sends a request without user action.
+  input.value = pcAgentPanel.consumePresetMessage();
+  nextTick(adjustTextareaHeight);
+}, { immediate: true });
 
 onUnmounted(() => {
   recoverIosViewportZoom();

@@ -48,45 +48,23 @@ class MqConsumerIdempotencyHelperTest {
         return new Message(new byte[]{1}, props);
     }
 
-    @Test
-    void tryBeginConsume_withHeaderKey_acquiredTrue() {
-        ValueOperations<String, String> ops = mock(ValueOperations.class);
-        when(stringRedisTemplate.opsForValue()).thenReturn(ops);
-        when(ops.setIfAbsent(Constants.REDIS_KEY_MQ_CONSUME_IDEMPOTENT + KEY, "1", 30, TimeUnit.SECONDS))
-                .thenReturn(true);
-
-        assertTrue(helper.tryBeginConsume(messageWithHeader(), 30));
-        verify(ops).setIfAbsent(Constants.REDIS_KEY_MQ_CONSUME_IDEMPOTENT + KEY, "1", 30, TimeUnit.SECONDS);
-    }
-
-    @Test
-    void tryBeginConsume_alreadyProcessed_returnsFalse() {
-        ValueOperations<String, String> ops = mock(ValueOperations.class);
-        when(stringRedisTemplate.opsForValue()).thenReturn(ops);
-        when(ops.setIfAbsent(Constants.REDIS_KEY_MQ_CONSUME_IDEMPOTENT + KEY, "1", 30, TimeUnit.SECONDS))
-                .thenReturn(false);
-
-        assertFalse(helper.tryBeginConsume(messageWithHeader(), 30));
-    }
-
-    @Test
-    void tryBeginConsume_messageWithoutKey_allowsConsumeWithoutRedis() {
-        assertTrue(helper.tryBeginConsume(null, 30));
-        Message bare = new Message(new byte[]{1}, new MessageProperties());
-        assertTrue(helper.tryBeginConsume(bare, 30));
+    @Test void legacyBeginRejectsEvenWhenRedisWouldAllow() {
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,()->helper.tryBeginConsume(messageWithHeader(),30));
         verifyNoInteractions(stringRedisTemplate);
     }
-
-    @Test
-    void releaseConsume_deletesKey() {
-        helper.releaseConsume(messageWithHeader());
-        verify(stringRedisTemplate).delete(Constants.REDIS_KEY_MQ_CONSUME_IDEMPOTENT + KEY);
-    }
-
-    @Test
-    void releaseConsume_withoutKey_doesNothing() {
-        helper.releaseConsume(null);
+    @Test void legacyBeginCannotTreatRedisExistingFlagAsDone() {
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,()->helper.tryBeginConsume(messageWithMessageIdOnly(),30));
         verifyNoInteractions(stringRedisTemplate);
+    }
+    @Test void legacyBeginWithoutIdCannotRunBusiness() {
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,()->helper.tryBeginConsume(null,30));
+        verifyNoInteractions(stringRedisTemplate);
+    }
+    @Test void releaseDoesNotDeleteDurableInboxCompletion() {
+        helper.releaseConsume(messageWithHeader()); verifyNoInteractions(stringRedisTemplate);
+    }
+    @Test void releaseWithoutKeyIsNoOp() {
+        helper.releaseConsume(null); verifyNoInteractions(stringRedisTemplate);
     }
 
     @Test

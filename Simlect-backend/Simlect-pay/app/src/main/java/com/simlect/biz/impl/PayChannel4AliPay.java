@@ -163,33 +163,54 @@ public class PayChannel4AliPay implements PayChannel {
     @Override
     public PayOrderNotifyDTO payNotify(Map<String, String> requestParams, String jsonBody) {
         try {
+            if (requestParams == null || !"RSA2".equals(requestParams.get("sign_type"))
+                    || requestParams.get("sign") == null || requestParams.get("sign").isBlank())
+                throw new BusinessException("支付宝回调签名参数无效");
             requestParams.remove("sign_type");
             Boolean signCheckResult = AlipaySignature.rsaCertCheckV2(requestParams, appConfig.getProjectFolder() + appConfig.getAlipayPublicCertPath(), "UTF-8", "RSA2");
-            if (!signCheckResult) {
+            if (!Boolean.TRUE.equals(signCheckResult)) {
                 throw new BusinessException("支付宝回调校验失败");
             }
         } catch (AlipayApiException e) {
             log.error("支付宝回调检验失败", e);
             throw new BusinessException("支付宝回调校验失败");
         }
-        String payOrderId = requestParams.get("out_trade_no");
-        String channelOrderId = requestParams.get("trade_no");
-        String status = String.valueOf(requestParams.get("trade_status"));
-        if (!TRADE_STATE_SUCCESS.equalsIgnoreCase(status)) {
-            log.info("支付宝回调地址状态不为success，不做处理，订单号：{}", payOrderId);
-            return null;
+        // Signed external form: validate all identities and amounts before normalizing the DTO.
+        String payOrderId = requiredField(requestParams, "out_trade_no", "[A-Za-z0-9_-]{1,64}");
+        String channelOrderId = requiredField(requestParams, "trade_no", "[0-9]{1,64}");
+        String appId = requiredField(requestParams, "app_id", "[0-9]{1,32}");
+        String sellerId = requiredField(requestParams, "seller_id", "[0-9]{1,32}");
+        if (appConfig.getAlipayAppid() == null || appConfig.getAlipayAppid().isBlank()
+                || appConfig.getAlipaySellerId() == null || appConfig.getAlipaySellerId().isBlank()
+                || !appId.equals(appConfig.getAlipayAppid()) || !sellerId.equals(appConfig.getAlipaySellerId())) {
+            throw new BusinessException("支付宝回调商户身份不匹配或未配置");
         }
-        PayOrderNotifyDTO notifyDTO = new PayOrderNotifyDTO(payOrderId, channelOrderId);
-        // 回调实付金额（供支付成功金额校验，防金额篡改回调）
-        String totalAmountText = requestParams.get("total_amount");
-        if (totalAmountText != null && !totalAmountText.isEmpty()) {
-            try {
-                notifyDTO.setTotalAmount(new BigDecimal(totalAmountText));
-            } catch (NumberFormatException e) {
-                log.warn("支付宝回调 total_amount 非法 payOrderId={}, value={}", payOrderId, totalAmountText);
-            }
+        BigDecimal amount = parsePaymentAmount(requestParams.get("total_amount"));
+        String status = requestParams.get("trade_status");
+        if (!java.util.Set.of("TRADE_SUCCESS", "TRADE_FINISHED", "WAIT_BUYER_PAY", "TRADE_CLOSED").contains(status == null ? "" : status)) {
+            throw new BusinessException("支付宝交易状态无效");
         }
-        return notifyDTO;
+        if (!isPaid(status)) return null;
+        return new PayOrderNotifyDTO(payOrderId, channelOrderId, amount);
+    }
+
+    private String requiredField(Map<String,String> params, String name, String pattern) {
+        String value = params.get(name);
+        if (value == null || !value.matches(pattern)) throw new BusinessException("支付宝字段无效: " + name);
+        return value;
+    }
+
+    private boolean isPaid(String status) {
+        return TRADE_STATE_SUCCESS.equals(status) || "TRADE_FINISHED".equals(status);
+    }
+
+    private BigDecimal parsePaymentAmount(String text) {
+        // No whitespace, signs, exponent notation, separators or sub-cent rounding.
+        if (text == null || text.length() > 32 || !text.matches("(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,2})?"))
+            throw new BusinessException("支付宝支付金额格式无效");
+        BigDecimal amount = new BigDecimal(text);
+        if (amount.signum() <= 0) throw new BusinessException("支付宝支付金额必须大于零");
+        return amount;
     }
 
     @Override
@@ -217,11 +238,16 @@ public class PayChannel4AliPay implements PayChannel {
                         payOrderId, subCode, response.getSubMsg());
                 return null;
             }
-            if (!TRADE_STATE_SUCCESS.equals(response.getTradeStatus())) {
+            if (!isPaid(response.getTradeStatus())) {
                 return null;
             }
             log.info("查询支付宝订单已支付 payOrderId={}, tradeNo={}", payOrderId, response.getTradeNo());
-            return new PayOrderNotifyDTO(payOrderId, response.getTradeNo());
+            // SDK certificateExecute verifies the response signature. Query results do not
+            // contain the external callback's app_id/seller_id/sign_type form contract.
+            if (payOrderId == null || !payOrderId.equals(response.getOutTradeNo())
+                    || response.getTradeNo() == null || !response.getTradeNo().matches("[0-9]{1,64}"))
+                throw new BusinessException("支付宝查单结果与支付订单不匹配");
+            return new PayOrderNotifyDTO(payOrderId, response.getTradeNo(), parsePaymentAmount(response.getTotalAmount()));
         } catch (BusinessException e) {
             throw e;
         } catch (Exception e) {

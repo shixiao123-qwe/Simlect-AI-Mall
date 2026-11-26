@@ -43,34 +43,48 @@ public class SysCategoryServiceImpl implements SysCategoryService {
 
 	@Override
 	public List<SysCategory> findListByParam(SysCategoryQuery param) {
-		List<SysCategory> list = this.sysCategoryMapper.selectList(param);
-		if (param.getParent()!=null && param.getParent()){
-			list = findChildren(list, Constants.ZERO_STR);
-		}
-		if (param.getPropertyQuery()!=null && param.getPropertyQuery()){
-			list = find4Property(list);
-		}
-		// Redis 有非空列表才走缓存；空列表多为库未导入时写入，需回源重建
-		List<?> cached = redisComponent.getCategoryList();
-		if (cached != null && !cached.isEmpty()) {
-			@SuppressWarnings("unchecked")
-			List<SysCategory> cachedList = (List<SysCategory>) cached;
-			list = findChildren(cachedList, Constants.ZERO_STR);
-			list = find4Property(list);
-			return list;
-		}
-		saveCategoryToRedis();
-		cached = redisComponent.getCategoryList();
-		if (cached != null && !cached.isEmpty()) {
-			@SuppressWarnings("unchecked")
-			List<SysCategory> cachedList = (List<SysCategory>) cached;
-			list = findChildren(cachedList, Constants.ZERO_STR);
-			list = find4Property(list);
-			return list;
-		}
-		list = findChildren(list, Constants.ZERO_STR);
-		list = find4Property(list);
+		// Cache only the unfiltered, unpaged category snapshot. Never replace a filtered
+		// result or an explicit sort order with the full cached catalog.
+		List<SysCategory> source = isFullCatalogQuery(param)
+				? loadCategorySnapshot() : sysCategoryMapper.selectList(param);
+		List<SysCategory> list = copyCategories(source);
+		if (Boolean.TRUE.equals(param.getParent())) list = findChildren(list, Constants.ZERO_STR);
+		if (Boolean.TRUE.equals(param.getPropertyQuery())) list = find4Property(list);
 		return list;
+	}
+
+	private boolean isFullCatalogQuery(SysCategoryQuery query) {
+		return !hasFilter(query.getCategoryId()) && !hasFilter(query.getCategoryIdFuzzy())
+				&& !hasFilter(query.getCategoryName()) && !hasFilter(query.getCategoryNameFuzzy())
+				&& !hasFilter(query.getpCategoryId()) && !hasFilter(query.getpCategoryIdFuzzy())
+				&& query.getSort() == null && query.getSimplePage() == null
+				&& query.getPageNo() == null && query.getPageSize() == null && query.getOrderBy() == null;
+	}
+
+	private boolean hasFilter(String value) { return value != null && !value.isEmpty(); }
+
+	@SuppressWarnings("unchecked")
+	private List<SysCategory> loadCategorySnapshot() {
+		List<?> cached = redisComponent.getCategoryList();
+		if (cached != null && !cached.isEmpty()) return (List<SysCategory>) cached;
+		SysCategoryQuery query = new SysCategoryQuery();
+		query.setOrderBy("sort asc, category_id asc");
+		List<SysCategory> rows = sysCategoryMapper.selectList(query);
+		if (rows == null) rows = new ArrayList<>();
+		redisComponent.saveCategory2Redis(rows);
+		return rows;
+	}
+
+	private List<SysCategory> copyCategories(List<SysCategory> source) {
+		List<SysCategory> rows = new ArrayList<>();
+		if (source == null) return rows;
+		for (SysCategory value : source) {
+			SysCategory copy = new SysCategory();
+			copy.setCategoryId(value.getCategoryId()); copy.setCategoryName(value.getCategoryName());
+			copy.setpCategoryId(value.getpCategoryId()); copy.setSort(value.getSort());
+			rows.add(copy);
+		}
+		return rows;
 	}
 
 	public List<SysCategory> findChildren(List<SysCategory> dataList,String pCategoryId){
@@ -104,7 +118,12 @@ public class SysCategoryServiceImpl implements SysCategoryService {
 						)
 				));
 
-		// 遍历分类列表，将属性挂载到对应的分类节点上
+		attachProperties(dataList, propertyMap);
+		return dataList;
+	}
+
+	private void attachProperties(List<SysCategory> dataList, Map<String, List<SysProductProperty>> propertyMap) {
+		// Load properties once, then attach them to every tree level without recursive SQL.
 		for (SysCategory category : dataList) {
 			if (category.getCategoryId() != null) {
 				// 从 Map 中取出当前分类对应的属性列表
@@ -113,11 +132,10 @@ public class SysCategoryServiceImpl implements SysCategoryService {
 
 				// 如果分类还有子节点，递归处理子节点
 				if (category.getChildren() != null && !category.getChildren().isEmpty()) {
-					find4Property(category.getChildren());
+					attachProperties(category.getChildren(), propertyMap);
 				}
 			}
 		}
-		return dataList;
 	}
 
 	@Override
@@ -140,7 +158,7 @@ public class SysCategoryServiceImpl implements SysCategoryService {
 
 	@Override
 	public Integer add(SysCategory bean) {
-		return this.sysCategoryMapper.insert(bean);
+		return refreshAfterWrite(this.sysCategoryMapper.insert(bean));
 	}
 
 	@Override
@@ -148,7 +166,7 @@ public class SysCategoryServiceImpl implements SysCategoryService {
 		if (listBean == null || listBean.isEmpty()) {
 			return 0;
 		}
-		return this.sysCategoryMapper.insertBatch(listBean);
+		return refreshAfterWrite(this.sysCategoryMapper.insertBatch(listBean));
 	}
 
 	@Override
@@ -156,19 +174,19 @@ public class SysCategoryServiceImpl implements SysCategoryService {
 		if (listBean == null || listBean.isEmpty()) {
 			return 0;
 		}
-		return this.sysCategoryMapper.insertOrUpdateBatch(listBean);
+		return refreshAfterWrite(this.sysCategoryMapper.insertOrUpdateBatch(listBean));
 	}
 
 	@Override
 	public Integer updateByParam(SysCategory bean, SysCategoryQuery param) {
 		StringTools.checkParam(param);
-		return this.sysCategoryMapper.updateByParam(bean, param);
+		return refreshAfterWrite(this.sysCategoryMapper.updateByParam(bean, param));
 	}
 
 	@Override
 	public Integer deleteByParam(SysCategoryQuery param) {
 		StringTools.checkParam(param);
-		return this.sysCategoryMapper.deleteByParam(param);
+		return refreshAfterWrite(this.sysCategoryMapper.deleteByParam(param));
 	}
 
 	@Override
@@ -178,12 +196,12 @@ public class SysCategoryServiceImpl implements SysCategoryService {
 
 	@Override
 	public Integer updateSysCategoryByCategoryId(SysCategory bean, String categoryId) {
-		return this.sysCategoryMapper.updateByCategoryId(bean, categoryId);
+		return refreshAfterWrite(this.sysCategoryMapper.updateByCategoryId(bean, categoryId));
 	}
 
 	@Override
 	public Integer deleteSysCategoryByCategoryId(String categoryId) {
-		return this.sysCategoryMapper.deleteByCategoryId(categoryId);
+		return refreshAfterWrite(this.sysCategoryMapper.deleteByCategoryId(categoryId));
 	}
 
 	@Override
@@ -217,7 +235,7 @@ public class SysCategoryServiceImpl implements SysCategoryService {
 		// 先查询当前节点的所有直接子节点
 		List<SysCategory> children = this.sysCategoryMapper.selectByPCategoryId(bean.getCategoryId());
 		// 如果当前节点下还有子节点，则连同子节点一起删除
-		if (children != null || !children.isEmpty()){
+		if (children != null && !children.isEmpty()){
 			for (SysCategory child : children) {
 				this.deleteSysCategory(child);
 			}
@@ -273,26 +291,20 @@ public class SysCategoryServiceImpl implements SysCategoryService {
 	private void saveCategoryToRedis(){
 		// 创建查询query，按sort升序排列
 		SysCategoryQuery query = new SysCategoryQuery();
-		query.setOrderBy("sort asc");
+		query.setOrderBy("sort asc, category_id asc");
 		// 查询列表
 		List<SysCategory> list = this.sysCategoryMapper.selectList(query);
 		redisComponent.saveCategory2Redis(list);
 	}
 
+	private Integer refreshAfterWrite(Integer rows) {
+		if (rows != null && rows > 0) saveCategoryToRedis();
+		return rows;
+	}
+
 	// 将信息从redis中取出
 	@Override
 	public List<SysCategory> getAllCategoryList() {
-		// 从redis中取出
-		List<?> cached = redisComponent.getCategoryList();
-		if (cached == null || cached.isEmpty()) {
-			saveCategoryToRedis();
-			cached = redisComponent.getCategoryList();
-		}
-		if (cached == null) {
-			return new ArrayList<>();
-		}
-		@SuppressWarnings("unchecked")
-		List<SysCategory> list = (List<SysCategory>) cached;
-		return list;
+		return copyCategories(loadCategorySnapshot());
 	}
 }

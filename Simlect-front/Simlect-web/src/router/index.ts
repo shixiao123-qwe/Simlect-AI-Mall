@@ -110,6 +110,7 @@ const router = createRouter({
     subPage('/member-center', () => import('@/views/MemberCenterView.vue'), { title: '会员中心', requiresAuth: true }),
     subPage('/pay-records', () => import('@/views/PayRecordView.vue'), { title: '支付记录', requiresAuth: true }),
     subPage('/notifications', () => import('@/views/NotificationView.vue'), { title: '消息中心', requiresAuth: true }),
+    subPage('/after-sale-requests', () => import('@/views/AfterSaleRequestsView.vue'), { title: '我的售后申请', requiresAuth: true }),
     subPage('/after-sale', () => import('@/views/AfterSaleView.vue'), { title: '售后管理' }),
     subPage('/recommend', () => import('@/views/RecommendView.vue'), { title: '编辑精选' }),
     subPage('/login', () => import('@/views/LoginView.vue'), {

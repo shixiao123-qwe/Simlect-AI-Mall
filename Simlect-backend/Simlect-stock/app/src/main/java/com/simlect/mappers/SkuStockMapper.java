@@ -4,6 +4,7 @@ import com.simlect.domain.SkuStock;
 import org.apache.ibatis.annotations.Param;
 
 public interface SkuStockMapper {
+    java.util.List<SkuStock> selectByProductIds(@Param("ids") java.util.List<String> ids);
 
     SkuStock selectByKey(@Param("productId") String productId,
                          @Param("propertyValueIdHash") String propertyValueIdHash);

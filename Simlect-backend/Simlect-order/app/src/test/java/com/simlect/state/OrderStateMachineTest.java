@@ -79,11 +79,19 @@ class OrderStateMachineTest {
     }
 
     @Test
+    void shippedRefundRequiresReviewedEvent() {
+        assertFalse(stateMachine.canTransition(OrderStatusEnum.SHIPPED.getStatus(), OrderStateEvent.FULL_REFUND));
+        assertFalse(stateMachine.canTransition(OrderStatusEnum.SHIPPED.getStatus(), OrderStateEvent.PARTIAL_REFUND));
+        assertTrue(stateMachine.canTransition(OrderStatusEnum.SHIPPED.getStatus(), OrderStateEvent.AFTER_SALE_FULL_REFUND));
+        assertTrue(stateMachine.canTransition(OrderStatusEnum.COMPLETED.getStatus(), OrderStateEvent.AFTER_SALE_PARTIAL_REFUND));
+    }
+
+    @Test
     void transitionFromMultipleRefundableStatesUsesStatusList() {
         when(orderInfoMapper.updateByParam(any(), any())).thenReturn(1);
 
         int changed = stateMachine.transition("ORDER-2",
-                Set.of(OrderStatusEnum.PAID, OrderStatusEnum.SHIPPED, OrderStatusEnum.PARTIALLY_REFUNDED),
+                Set.of(OrderStatusEnum.PAID, OrderStatusEnum.PARTIALLY_REFUNDED),
                 OrderStateEvent.FULL_REFUND, null);
 
         assertEquals(1, changed);
@@ -92,8 +100,7 @@ class OrderStateMachineTest {
         verify(orderInfoMapper).updateByParam(updateCaptor.capture(), queryCaptor.capture());
         assertEquals(OrderStatusEnum.REFUNDED.getStatus(), updateCaptor.getValue().getOrderStatus());
         assertArrayEquals(
-                Set.of(OrderStatusEnum.PAID.getStatus(), OrderStatusEnum.SHIPPED.getStatus(),
-                                OrderStatusEnum.PARTIALLY_REFUNDED.getStatus()).stream().sorted().toArray(Integer[]::new),
+                Set.of(OrderStatusEnum.PAID.getStatus(), OrderStatusEnum.PARTIALLY_REFUNDED.getStatus()).stream().sorted().toArray(Integer[]::new),
                 java.util.Arrays.stream(queryCaptor.getValue().getOrderStatusList()).sorted().toArray(Integer[]::new));
     }
 

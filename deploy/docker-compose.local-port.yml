@@ -1,0 +1,6 @@
+# Optional local override. Same MySQL container and data volume; loopback only.
+# Compose 2.24.4+ supports !override. Used only when MYSQL_PORT differs from 3306.
+services:
+  mysql:
+    ports: !override
+      - "127.0.0.1:${MYSQL_PORT:-3307}:3306"

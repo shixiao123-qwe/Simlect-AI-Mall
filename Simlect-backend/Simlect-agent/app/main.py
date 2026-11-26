@@ -29,7 +29,7 @@ POST /confirmAction → pending_action → action_execute → Java /api/order/*
 ================================================================================
 """
 
-from contextlib import asynccontextmanager  # 异步上下文管理器，用于 FastAPI 生命周期（类似 @PreDestroy / @PostConstruct）
+from contextlib import asynccontextmanager, AsyncExitStack
 
 import structlog  # 结构化日志库，输出 JSON 格式日志（类似 SLF4J + Logstash 编码器）
 
@@ -58,6 +58,8 @@ from app.services.health_service import health_service  # /health 探活逻辑�
 
 from app.graph.checkpoint.redis_saver import close_checkpointer  # LangGraph 检查点（Redis）资源释放
 from app.services.redis_service import redis_service  # Redis 客户端封装单例
+from app.services.internal_http import internal_http_lifespan
+from app.services.request_context import RequestTraceMiddleware
 
 # 配置 structlog：每条日志带 ISO 时间戳，并以 JSON 输出（便于 ELK 采集）
 structlog.configure(
@@ -74,24 +76,26 @@ async def lifespan(app: FastAPI):
     yield 之前做启动初始化；yield 之后做优雅关闭。
     """
 
-    await redis_service.connect()  # 建立 Redis 连接
-    await init_pool()  # 初始化 MySQL 连接池
-    from app.memory.session_memory_service import session_memory_service  # 延迟导入，避免循环依赖
-
-    await session_memory_service.ensure_table()  # 确保会话记忆表存在（不存在则建表）
-    await start_ws_listener(redis_service.client)  # 订阅 Redis 频道，把推送转发到 WebSocket
-    logger.info("agent_service_started")  # 启动完成日志
-    yield  # 此处之后应用开始对外接收请求；shutdown 时从 yield 往下继续执行
-
-    await stop_ws_listener()  # 取消 Redis 订阅协程
-    await close_checkpointer()  # 关闭 LangGraph Redis 检查点
-    await close_pool()  # 关闭 MySQL 连接池
-    await redis_service.close()  # 关闭 Redis 连接
+    async with AsyncExitStack() as resources:
+        # Register cleanup before startup so partial failures also release resources.
+        await resources.enter_async_context(internal_http_lifespan())
+        resources.push_async_callback(redis_service.close)
+        await redis_service.connect()
+        resources.push_async_callback(close_pool)
+        await init_pool()
+        resources.push_async_callback(close_checkpointer)
+        from app.memory.session_memory_service import session_memory_service
+        await session_memory_service.ensure_table()
+        resources.push_async_callback(stop_ws_listener)
+        await start_ws_listener(redis_service.client)
+        logger.info("agent_service_started")
+        yield
     logger.info("agent_service_stopped")  # 关闭完成日志
 
 
 # 创建 FastAPI 应用实例；lifespan 绑定上面的启动/关闭逻辑
-app = FastAPI(title="EShop Agent Python", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="基于 AI Agent 的微服务电商平台", version="1.0.0", lifespan=lifespan)
+app.add_middleware(RequestTraceMiddleware)
 
 limiter = limiter  # 共享全局限流器单例（见 app.api.rate_limit，防双实例导致限流失效）
 app.state.limiter = limiter  # 挂到 app.state，供路由装饰器 @limiter.limit 使用

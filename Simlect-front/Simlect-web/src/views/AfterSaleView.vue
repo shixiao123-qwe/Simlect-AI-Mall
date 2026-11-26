@@ -2,6 +2,7 @@
 <template>
   <!-- [zh] 开始标签 `<div>` -->
   <div class="after-sale-page">
+    <router-link to="/after-sale-requests" style="display:block;padding:16px">查看我的售后申请 / 填写退货物流 →</router-link>
     <!-- [zh] 开始标签 `<div>` -->
     <div class="after-sale-tabs card-flat tabs-scroll-single">
       <!-- [zh] 开始标签 `<el-tabs>` -->
@@ -254,7 +255,7 @@ const fetchPage = async (next: number, status?: number) => {
 
 const setupObserver = () => {
   observer?.disconnect();
-  if (!sentinelRef.value) return;
+  if (loadError.value || !sentinelRef.value) return;
   observer = new IntersectionObserver(
     (entries) => {
       if (entries.some((e) => e.isIntersecting)) loadMore();
@@ -286,7 +287,7 @@ const pageCache = usePageListCache({
 });
 
 const loadMore = async () => {
-  if (loadingMore.value || finished.value) return;
+  if (loadError.value || loadingMore.value || finished.value) return;
   if (pageNo.value >= pageTotal.value && pageNo.value > 0) {
     finished.value = true;
     return;
@@ -315,6 +316,7 @@ const loadMore = async () => {
 };
 
 const onTabChange = () => {
+  loadError.value = '';
   pageCache.clear();
   pageNo.value = 0;
   pageTotal.value = 1;

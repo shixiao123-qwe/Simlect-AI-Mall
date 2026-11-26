@@ -13,7 +13,7 @@ const ios26MessageBoxOptions = {
 async function exchangeConfirmToken(password, targetPath) {
   const base = import.meta.env.PROD ? '/admin-api' : '/api'
   const res = await axios.post(
-    `${base}/admin/account/confirmPassword`,
+    `${base}/account/confirmPassword`,
     new URLSearchParams({ password, targetPath }),
     { withCredentials: true, headers: { 'Content-Type': 'application/x-www-form-urlencoded' } },
   )

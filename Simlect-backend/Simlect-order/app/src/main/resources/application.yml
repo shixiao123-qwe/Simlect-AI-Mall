@@ -80,6 +80,15 @@ management:
         include: health,info
 
 simlect:
+  after-sale:
+    # Disabled until an authoritative policy and reliable receipt/product evidence exist.
+    return-window-days: ${AFTER_SALE_RETURN_WINDOW_DAYS:0}
+    return-window-source: ${AFTER_SALE_RETURN_WINDOW_SOURCE:}
+    return-address: ${AFTER_SALE_RETURN_ADDRESS:}
+    refund-enabled: ${SIMLECT_AFTER_SALE_REFUND_ENABLED:false}
+  pay:
+    local-mock-enabled: ${SIMLECT_PAY_LOCAL_MOCK_ENABLED:false}
+    demo-confirm-enabled: ${SIMLECT_PAY_DEMO_CONFIRM_ENABLED:false}
   security:
     admin-interceptor: true
   internal:

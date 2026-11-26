@@ -5,17 +5,22 @@ import com.simlect.constants.Constants;
 import com.simlect.entity.po.SysCategory;
 import com.simlect.entity.po.SysProductProperty;
 import com.simlect.entity.query.SysCategoryQuery;
+import com.simlect.entity.query.SimplePage;
 import com.simlect.entity.vo.PaginationResultVO;
 import com.simlect.mappers.SysCategoryMapper;
 import com.simlect.mappers.SysProductPropertyMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -60,15 +65,12 @@ class SysCategoryServiceImplTest {
 
     @Test
     void findListByParam_usesRedisCacheWhenPresent() {
-        when(sysCategoryMapper.selectList(any())).thenReturn(new ArrayList<>());
         when(redisComponent.getCategoryList()).thenAnswer(inv -> List.of(category("1", "0")));
-        when(sysProductPropertyService.findListByParam(any())).thenReturn(new ArrayList<>());
 
         List<SysCategory> list = sysCategoryService.findListByParam(new SysCategoryQuery());
 
         assertEquals(1, list.size());
-        // selectList 先回源 DB 一次，命中 Redis 非空缓存后不再重建
-        verify(sysCategoryMapper, times(1)).selectList(any());
+        verifyNoInteractions(sysCategoryMapper, sysProductPropertyService);
         verify(redisComponent, never()).saveCategory2Redis(any());
     }
 
@@ -76,12 +78,12 @@ class SysCategoryServiceImplTest {
     void findListByParam_rebuildsRedisWhenEmptyCache() {
         when(sysCategoryMapper.selectList(any())).thenReturn(List.of(category("1", "0")));
         when(redisComponent.getCategoryList()).thenReturn(null);
-        when(sysProductPropertyService.findListByParam(any())).thenReturn(new ArrayList<>());
 
         List<SysCategory> list = sysCategoryService.findListByParam(new SysCategoryQuery());
 
         assertEquals(1, list.size());
         verify(redisComponent).saveCategory2Redis(any());
+        verify(sysCategoryMapper, times(1)).selectList(argThat(q -> "sort asc, category_id asc".equals(q.getOrderBy())));
     }
 
     @Test
@@ -179,5 +181,88 @@ class SysCategoryServiceImplTest {
 
         assertEquals(1, list.size());
         verify(sysCategoryMapper, never()).selectList(any());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings={"categoryId","categoryIdFuzzy","categoryName","categoryNameFuzzy","pCategoryId","pCategoryIdFuzzy"})
+    void filteredQueryNeverUsesFullCatalogCache(String field) {
+        SysCategoryQuery query = new SysCategoryQuery();
+        ReflectionTestUtils.setField(query,field,"requested");
+        when(sysCategoryMapper.selectList(query)).thenReturn(List.of(category("only-match","0")));
+
+        List<SysCategory> result=sysCategoryService.findListByParam(query);
+
+        assertEquals(List.of("only-match"),result.stream().map(SysCategory::getCategoryId).toList());
+        verify(sysCategoryMapper).selectList(query);
+        verifyNoInteractions(redisComponent,sysProductPropertyService);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings={"sort","orderBy","simplePage","pageNo","pageSize"})
+    void sortingAndPaginationNeverUseFullCatalogCache(String field) {
+        SysCategoryQuery query=new SysCategoryQuery();
+        Object value=switch(field){
+            case "orderBy" -> "category_id desc";
+            case "simplePage" -> new SimplePage(0,1);
+            default -> 1;
+        };
+        ReflectionTestUtils.setField(query,field,value);
+        when(sysCategoryMapper.selectList(query)).thenReturn(List.of(category("paged-match","0")));
+
+        assertEquals("paged-match",sysCategoryService.findListByParam(query).get(0).getCategoryId());
+        verifyNoInteractions(redisComponent);
+    }
+
+    @Test
+    void parentAndPropertyFlagsDoNotLeakMutationsIntoCachedSnapshot() {
+        SysCategory parent=category("1","0"),child=category("11","1");
+        List<SysCategory> snapshot=List.of(parent,child);
+        doReturn(snapshot).when(redisComponent).getCategoryList();
+        SysProductProperty property=new SysProductProperty();property.setCategoryId("11");property.setPropertySort(1);
+        when(sysProductPropertyService.findListByParam(any())).thenReturn(List.of(property));
+        SysCategoryQuery shaped=new SysCategoryQuery();shaped.setParent(true);shaped.setPropertyQuery(true);
+
+        List<SysCategory> tree=sysCategoryService.findListByParam(shaped);
+        assertEquals(1,tree.size());
+        assertEquals(List.of(property),tree.get(0).getChildren().get(0).getproductPropertyList());
+        verify(sysProductPropertyService,times(1)).findListByParam(any());
+        assertTrue(parent.getChildren().isEmpty());assertNull(child.getproductPropertyList());
+
+        List<SysCategory> flat=sysCategoryService.findListByParam(new SysCategoryQuery());
+        assertEquals(2,flat.size());assertTrue(flat.get(0).getChildren().isEmpty());
+        assertNull(flat.get(1).getproductPropertyList());
+        flat.get(0).setCategoryName("caller-local-change");assertNull(parent.getCategoryName());
+        verifyNoInteractions(sysCategoryMapper);
+    }
+
+    @Test
+    void emptyCachedListIsRebuiltFromDatabaseOnce() {
+        when(redisComponent.getCategoryList()).thenReturn(List.of());
+        when(sysCategoryMapper.selectList(any())).thenReturn(List.of(category("newly-imported","0")));
+        assertEquals("newly-imported",sysCategoryService.findListByParam(new SysCategoryQuery()).get(0).getCategoryId());
+        verify(sysCategoryMapper,times(1)).selectList(any());
+        verify(redisComponent).saveCategory2Redis(argThat(rows -> rows.size()==1));
+    }
+
+    @Test
+    void successfulBatchWriteRefreshesSnapshotBeforeNextRead() {
+        AtomicReference<List<?>> snapshot=new AtomicReference<>(List.of(category("old","0")));
+        when(redisComponent.getCategoryList()).thenAnswer(inv -> snapshot.get());
+        doAnswer(inv -> {snapshot.set(inv.getArgument(0));return null;}).when(redisComponent).saveCategory2Redis(any());
+        when(sysCategoryMapper.insertBatch(any())).thenReturn(1);
+        when(sysCategoryMapper.selectList(any())).thenReturn(List.of(category("new","0")));
+
+        assertEquals("old",sysCategoryService.findListByParam(new SysCategoryQuery()).get(0).getCategoryId());
+        assertEquals(1,sysCategoryService.addBatch(List.of(category("new","0"))));
+        assertEquals("new",sysCategoryService.findListByParam(new SysCategoryQuery()).get(0).getCategoryId());
+        verify(sysCategoryMapper,times(1)).selectList(any());
+    }
+
+    @Test
+    void noOpWriteDoesNotOverwriteSnapshot() {
+        when(sysCategoryMapper.updateByCategoryId(any(),anyString())).thenReturn(0);
+        assertEquals(0,sysCategoryService.updateSysCategoryByCategoryId(category("missing","0"),"missing"));
+        verifyNoInteractions(redisComponent);
+        verify(sysCategoryMapper,never()).selectList(any());
     }
 }

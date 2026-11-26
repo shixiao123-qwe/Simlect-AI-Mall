@@ -77,3 +77,30 @@ management:
       show-details: never
       probes:
         enabled: true
+
+---
+# Opt in with SPRING_PROFILES_ACTIVE=low-memory for local development.
+spring:
+  config:
+    activate:
+      on-profile: low-memory
+  datasource:
+    hikari:
+      minimum-idle: 1
+      maximum-pool-size: 5
+  task:
+    execution:
+      pool:
+        core-size: 2
+        max-size: 4
+        queue-capacity: 100
+
+server:
+  tomcat:
+    threads:
+      min-spare: 2
+      max: 30
+
+simlect:
+  resources:
+    low-memory: true

@@ -87,6 +87,9 @@ aliyun:
     reply-to-address: ${ALIYUN_DM_REPLY_TO_ADDRESS:false}
 
 simlect:
+  mail:
+    # Only for local demos; verification and expiry still use Redis as usual.
+    local-mock-enabled: ${SIMLECT_MAIL_LOCAL_MOCK_ENABLED:false}
   internal:
     token: ${SIMLECT_INTERNAL_TOKEN:}
     auth-enabled: true

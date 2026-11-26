@@ -135,11 +135,11 @@ class RedisService:  # Redis 服务 — 类似 Java @Service RedisTemplate 封�
 
         return await self.client.get(f"{REDIS_PROMPT}{prompt_key}")
 
-    async def save_pending_action(self, token: str, action: dict) -> None:  # 保存待确认操作
+    async def save_pending_action(self, token: str, action: dict, ttl_seconds: int | None = None) -> None:  # 保存待确认操作
 
         await self.client.setex(
             f"{REDIS_AGENT_PENDING_ACTION}{token}",
-            PENDING_ACTION_TTL,
+            ttl_seconds if ttl_seconds is not None else PENDING_ACTION_TTL,
             json.dumps(action, ensure_ascii=False),
         )
 
@@ -172,13 +172,15 @@ if v == false then return -1 end
 local ok, obj = pcall(cjson.decode, v)
 if not ok or type(obj) ~= 'table' then return 0 end
 if tostring(obj['status']) ~= expect then return 0 end
+local patch = cjson.decode(ARGV[4])
+for field, value in pairs(patch) do obj[field] = value end
 obj['status'] = tonumber(target)
 redis.call('set', key, cjson.encode(obj), 'EX', ttl)
 return 1
 """
 
     async def cas_pending_status(self, token: str, expect: int, target: int,
-                                 ttl_seconds: int | None = None) -> bool:
+                                 ttl_seconds: int | None = None, fields: dict | None = None) -> bool:
         """原子 CAS：当前状态 == expect 时改为 target（并发 confirm/cancel 与执行前落定状态用）。
 
         返回 True 表示本次调用拥有状态变更权；key 不存在返回 False（视为已清理）。
@@ -186,7 +188,7 @@ return 1
         ttl = int(ttl_seconds if ttl_seconds is not None else PENDING_ACTION_TTL)
         key = f"{REDIS_AGENT_PENDING_ACTION}{token}"
         result = await self.client.eval(
-            self._PENDING_CAS_LUA, 1, key, str(expect), str(target), str(ttl)
+            self._PENDING_CAS_LUA, 1, key, str(expect), str(target), str(ttl), json.dumps(fields or {}, ensure_ascii=False)
         )
         return result == 1
 

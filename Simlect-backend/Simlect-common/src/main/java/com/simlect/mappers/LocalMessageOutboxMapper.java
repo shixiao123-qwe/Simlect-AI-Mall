@@ -24,4 +24,20 @@ public interface LocalMessageOutboxMapper {
     List<LocalMessageOutbox> selectDispatchBatch(@Param("statuses") List<Integer> statuses,
                                                  @Param("beforeTime") Date beforeTime,
                                                  @Param("limit") int limit);
+    Integer claimLease(@Param("id") Long id, @Param("owner") String owner,
+                       @Param("leaseSeconds") int leaseSeconds, @Param("maxAttempts") int maxAttempts,
+                       @Param("backoffBaseSeconds") int backoffBaseSeconds, @Param("backoffMaxSeconds") int backoffMaxSeconds);
+
+    Integer ownsLease(@Param("id") Long id, @Param("owner") String owner);
+
+    Integer completeLease(@Param("id") Long id, @Param("owner") String owner,
+                          @Param("sent") boolean sent, @Param("error") String error,
+                          @Param("backoffBaseSeconds") int backoffBaseSeconds, @Param("backoffMaxSeconds") int backoffMaxSeconds);
+
+    List<LocalMessageOutbox> selectReadyBatch(@Param("limit") int limit,
+                          @Param("maxAttempts") int maxAttempts, @Param("leaseSeconds") int leaseSeconds);
+
+    Integer expireExhausted(@Param("limit") int limit, @Param("maxAttempts") int maxAttempts,
+                            @Param("leaseSeconds") int leaseSeconds);
+
 }

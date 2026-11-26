@@ -32,6 +32,16 @@ public class RabbitMQConfig {
     @Value("${order.confirm.minute:10080}")
     private int orderConfirmMinute;
 
+    public static final String INBOX_FAILURE_EXCHANGE = "mq.inbox.failure.exchange";
+    public static final String INBOX_FAILURE_KEY = "mq.inbox.failure";
+    public static final String INBOX_FAILURE_QUEUE = "mq.inbox.failure.queue";
+
+    @Bean public DirectExchange inboxFailureExchange() { return new DirectExchange(INBOX_FAILURE_EXCHANGE,true,false); }
+    @Bean public Queue inboxFailureQueue() { return QueueBuilder.durable(INBOX_FAILURE_QUEUE).build(); }
+    @Bean public Binding inboxFailureBinding() {
+        return BindingBuilder.bind(inboxFailureQueue()).to(inboxFailureExchange()).with(INBOX_FAILURE_KEY);
+    }
+
     // 交换机
     public static final String RUSHING_EXCHANGE = "rushing.exchange";
     // 支付、订单相关的交换机

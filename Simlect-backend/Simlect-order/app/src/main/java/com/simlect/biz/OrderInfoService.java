@@ -54,6 +54,8 @@ public interface OrderInfoService {
 	void syncPaidCouponRushUserCoupons(@NotEmpty String userId);
 
 	void refund(@NotEmpty OrderItem orderItem, String userId);
+	/** Trusted reviewed after-sale path; not exposed as a direct user refund endpoint. */
+	void refundAfterSale(OrderItem orderItem, String userId, boolean restockable);
 
 	List<OrderCountVO> getOrderCountInfo(String userId);
 

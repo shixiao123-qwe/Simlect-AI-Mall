@@ -4,6 +4,10 @@ import com.simlect.annotation.GlobalInterceptor;
 import com.simlect.entity.vo.ResponseVO;
 import com.simlect.biz.SearchKeywordService;
 import com.simlect.biz.SearchRecommendService;
+import com.simlect.component.EsSearchComponent;
+import com.simlect.exception.BusinessException;
+import java.math.BigDecimal;
+import java.util.Set;
 import jakarta.annotation.Resource;
 import jakarta.validation.constraints.NotEmpty;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -14,6 +18,34 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/search")
 @RestController
 public class SearchController extends ABaseController {
+
+    @Resource
+    private EsSearchComponent esSearchComponent;
+
+    @PostMapping("/products")
+    public ResponseVO searchProducts(String keyWords, BigDecimal priceFrom, BigDecimal priceTo,
+                                     String sortType, String sortField, Integer pageNo) {
+        if (keyWords == null || keyWords.isBlank() || keyWords.length() > 200) {
+            throw new BusinessException("搜索关键词不能为空且不能超过200个字符");
+        }
+        if ((priceFrom != null && priceFrom.signum() < 0)
+                || (priceTo != null && priceTo.signum() < 0)
+                || (priceFrom != null && priceTo != null && priceFrom.compareTo(priceTo) > 0)) {
+            throw new BusinessException("价格区间无效");
+        }
+        // ES defaults to a 10,000-hit result window; 666 pages * 15 stays within it.
+        if (pageNo != null && (pageNo < 1 || pageNo > 666)) {
+            throw new BusinessException("页码必须在1至666之间");
+        }
+        if (sortField != null && !Set.of("composite", "price", "sale").contains(sortField)) {
+            throw new BusinessException("排序字段无效");
+        }
+        if (sortType != null && !Set.of("asc", "desc").contains(sortType)) {
+            throw new BusinessException("排序方向无效");
+        }
+        return getSuccessResponseVO(esSearchComponent.searchProducts(keyWords.trim(), priceFrom, priceTo,
+                sortType, sortField, pageNo));
+    }
 
     @Resource
     private SearchKeywordService searchKeywordService;

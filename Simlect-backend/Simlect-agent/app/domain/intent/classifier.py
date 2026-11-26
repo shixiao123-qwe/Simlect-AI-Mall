@@ -19,6 +19,7 @@ from app.config.settings import get_settings  # intent_use_llm、intent_rule_fal
 from app.domain.intent.types import IntentKind  # 意图枚举，类似 public enum IntentKind
 from app.harness.metrics.runtime_sensors import INTENT_TOTAL  # Prometheus 计数器
 from app.services.llm_factory import create_memory_llm  # 创建轻量 LLM 客户端
+from app.utils.llm_content import llm_text
 from app.services.prompt_service import load_user_intent_classifier_prompt  # 意图分类提示模板
 from app.utils.order_ids import extract_order_id  # 从文本提取订单号
 from app.utils.product_consult import is_product_consult_turn, normalize_consult_card  # 商品咨询判定
@@ -374,7 +375,7 @@ async def classify_intent_by_llm(
                 HumanMessage(content=prompt),
             ]
         )
-        content = response.content if isinstance(response.content, str) else str(response.content or "")
+        content = llm_text(response.content)
         intent, data = _parse_intent_json(content)
         if intent is None:
             logger.warning("intent_llm_parse_failed", raw=content[:200])  # 只打前 200 字

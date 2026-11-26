@@ -11,6 +11,7 @@ MAX_ORDER_ITEMS = 5
 ACTION_CONFIRM_HINT = "请核对以下信息，确认后将立即执行。"
 
 ACTION_LABELS = {
+    "AFTER_SALE_REQUEST": ("售后申请", "确认提交申请", "仅提交人工审核，不直接退款或扣减库存"),
     "REFUND": ("退款", "确认退款", "退款将原路返回，提交后无法撤销"),
     "CONFIRM_RECEIPT": ("确认收货", "确认收货", "确认后将无法发起退款"),
     "PRODUCT_REVIEW": ("提交评价", "确认提交评价", "评价提交后不可修改"),
@@ -494,6 +495,12 @@ def _sanitize_intro(intro: str | None) -> str:
 def _build_details(action_type: str, params: dict, summary: str | None) -> list[dict]:
 
     details = []
+    if action_type == "AFTER_SALE_REQUEST":
+        labels={"refund":"退款","return_refund":"退货退款","exchange":"换货"}
+        return [{"label":"订单项","value":str(params.get("orderItemId") or "")},
+                {"label":"申请类型","value":labels.get(params.get("type"),"未知")},
+                {"label":"申请原因","value":str(params.get("reason") or "")},
+                {"label":"提交结果","value":"待人工审核；不会直接执行退款或换货"}]
     if action_type == "REFUND":
         _add(details, "退款金额", f"{params.get('refundAmount')} 元" if params.get("refundAmount") else None)
         if not params.get("orderItems"):

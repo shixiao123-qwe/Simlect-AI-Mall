@@ -80,6 +80,11 @@ class AgentGraphState(TypedDict, total=False):
     assistant_cards: str | None  # 助手侧卡片载荷（可能与 biz_data 分工不同场景）
     search_tool_hint: str | None  # 搜索相关提示文案（引导 LLM 或前端展示）
     search_fallback_done: bool  # 是否已做过搜索兜底，避免重复调用搜索工具
+    shopping_requirement: dict
+    after_sale_handled: bool
+    after_sale_tools: list[str]
+    shopping_handled: bool
+    shopping_tool: str
     category_switch_search: bool  # 品类切换触发的搜索标记（特殊 prompt 分支）
 
     # ---------- 意图 ----------

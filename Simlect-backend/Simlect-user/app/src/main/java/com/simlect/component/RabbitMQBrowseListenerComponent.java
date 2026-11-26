@@ -23,25 +23,10 @@ public class RabbitMQBrowseListenerComponent {
 
     @RabbitListener(queues = RabbitMQConfig.BROWSE_RECORD_QUEUE, ackMode = "MANUAL")
     public void handleBrowseRecord(BrowseHistoryMessageDTO message, Channel channel, Message mqMessage) throws IOException {
-        Long deliveryTag = mqMessage.getMessageProperties().getDeliveryTag();
-        if (!mqListenerHelper.tryBeginConsume(mqMessage, MqListenerHelper.CONSUME_IDEMPOTENCY_TTL_HIGH_SECONDS)) {
-            channel.basicAck(deliveryTag, false);
-            return;
-        }
-        try {
-            if (message == null || message.getUserId() == null || message.getProductId() == null) {
-                channel.basicAck(deliveryTag, false);
-                return;
-            }
-            userBrowseHistoryService.recordBrowse(message.getUserId(), message.getProductId());
-            mqListenerHelper.clearConsumeRetry(RabbitMQConfig.BROWSE_RECORD_QUEUE, mqMessage);
-            channel.basicAck(deliveryTag, false);
-        } catch (Exception e) {
-            log.error("足迹落库失败 userId={}, productId={}",
-                    message != null ? message.getUserId() : null,
-                    message != null ? message.getProductId() : null, e);
-            mqListenerHelper.nackWithRetryOrDlq(channel, deliveryTag, mqMessage,
-                    RabbitMQConfig.BROWSE_RECORD_QUEUE, message, e);
-        }
+        mqListenerHelper.consumeInbox(RabbitMQConfig.BROWSE_RECORD_QUEUE,"BROWSE_HISTORY",mqMessage,channel,message,() -> {
+            if (message==null || message.getUserId()==null || message.getProductId()==null)
+                throw new MqConsumerIdempotencyHelper.InvalidEventException("足迹消息参数缺失");
+            userBrowseHistoryService.recordBrowse(message.getUserId(),message.getProductId());
+        });
     }
 }

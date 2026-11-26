@@ -57,6 +57,8 @@ class UserIdOrderArgs(BaseModel):  # 通用 Schema — 需要 userId + orderId �
 class UserIdOrderItemArgs(BaseModel):  # 退款提案参数 Schema — 需要 orderItemId 而非 orderId
     userId: str = Field(description="用户Id")  # 必填
     orderItemId: str = Field(description="订单项Id")  # 必填 — 格式如 订单号_1
+    type: str | None = Field(None, description="用户明确的售后类型：refund 或 return_refund")
+    reason: str | None = Field(None, description="用户提供的售后原因，缺失时先询问")
 
 
 class ReviewArgs(BaseModel):  # 商品评价提案参数 Schema
@@ -146,11 +148,11 @@ def build_mcp_tools() -> list[StructuredTool]:  # 构造供 LLM bind_tools 使�
             args_schema=UserIdOrderArgs,
         ),
         StructuredTool.from_function(
-            coroutine=lambda userId, orderItemId: _call(
-                "PROPOSE_REFUND", userId=userId, orderItemId=orderItemId
+            coroutine=lambda userId, orderItemId, type=None, reason=None: _call(
+                "PROPOSE_REFUND", userId=userId, orderItemId=orderItemId, type=type, reason=reason
             ),
             name="PROPOSE_REFUND",
-            description="[WRITE] 退款提案；用户要退款时直接调用，不要先 QUERY_ORDERS",
+            description="[PROPOSE ONLY] 兼容退款指引；需明确类型和原因后调用 CREATE_AFTER_SALE_REQUEST，确认只提交人工审核申请",
             args_schema=UserIdOrderItemArgs,
         ),
         StructuredTool.from_function(

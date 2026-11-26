@@ -17,7 +17,7 @@ let cached: HomeBootstrapData | null = null;
 
 const loadFeedPage = async (state: HomeBootstrapData) => {
   const next = state.feedPageNo + 1;
-  const page = await productApi.loadProduct({ pageNo: next });
+  const page = await productApi.loadProduct({ pageNo: next, includeRecommended: true });
   const chunk = filterOnSaleProducts(page?.list);
 
   if (chunk.length > 0) {

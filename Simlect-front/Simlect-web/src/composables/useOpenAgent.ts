@@ -44,7 +44,7 @@ export function useOpenAgent() {
     }
 
     if (isDesktop.value) {
-      pcAgentPanel.open({ fromProduct });
+      pcAgentPanel.open({ fromProduct, presetMessage: options?.presetMessage });
       return;
     }
 

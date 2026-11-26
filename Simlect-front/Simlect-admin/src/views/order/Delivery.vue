@@ -75,6 +75,7 @@
 <script setup>
 import { ref, reactive, getCurrentInstance, nextTick } from 'vue'
 import { loadRouteLocation } from 'vue-router'
+import { promptAdminConfirmPassword } from '@/utils/sensitiveConfirm'
 const { proxy } = getCurrentInstance()
 
 const dialogConfig = ref({
@@ -143,9 +144,14 @@ const submitForm = () => {
     let params = {}
     Object.assign(params, formData.value)
     delete params.recordList
+    let sensitiveConfirmToken
+    try {
+      sensitiveConfirmToken = await promptAdminConfirmPassword('确认登记发货？演示订单请使用测试物流单号。', '/admin/order/delivery')
+    } catch { return }
     let result = await proxy.Request({
       url: proxy.Api.delivery,
       params,
+      sensitiveConfirmToken,
     })
     if (!result) {
       return

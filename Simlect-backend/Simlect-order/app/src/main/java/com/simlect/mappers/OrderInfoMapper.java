@@ -13,6 +13,10 @@ public interface OrderInfoMapper<T,P> extends BaseMapper<T,P> {
 
 	 T selectByOrderId(@Param("orderId") String orderId);
 
+	 T selectForRefundByOrderId(@Param("orderId") String orderId);
+
+	 Integer selectRefundLogisticsStatus(@Param("orderId") String orderId);
+
 	Integer markCommentEvaluatedIfNotEvaluated(@Param("orderId") String orderId, @Param("userId") String userId);
 
 	Integer revertCommentStatusIfEvaluated(@Param("orderId") String orderId);

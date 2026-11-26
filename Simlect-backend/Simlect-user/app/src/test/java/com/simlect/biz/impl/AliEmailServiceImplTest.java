@@ -1,37 +1,73 @@
 package com.simlect.biz.impl;
 
-import com.simlect.biz.EmailService;
-import org.junit.jupiter.api.Disabled;
+import com.aliyuncs.CommonRequest;
+import com.aliyuncs.CommonResponse;
+import com.aliyuncs.DefaultAcsClient;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
-import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
+import org.springframework.test.util.ReflectionTestUtils;
 
-/**
- * AliEmailServiceImpl 单元测试。
- * <p>
- * 该实现中阿里云 {@code DefaultAcsClient} 在方法内部直接 {@code new} 构造，
- * 无法注入 mock；且成功路径依赖真实阿里云 DirectMail 网络调用。
- * 纯单测环境下既无法打桩客户端，也无法离线断言成功行为，故整体标记 @Disabled。
- */
-@ExtendWith(MockitoExtension.class)
-@Disabled("sendVerificationCode 内部 new DefaultAcsClient 且依赖真实阿里云网络，无法纯单测")
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.*;
+
+@ExtendWith(OutputCaptureExtension.class)
 class AliEmailServiceImplTest {
-
-    @InjectMocks
-    private AliEmailServiceImpl aliEmailService;
-
     @Test
-    void placeholder() {
-        // 见类级 @Disabled 说明
+    void localModeLogsGeneratedCodeWithoutCreatingMailClient(CapturedOutput output) {
+        AliEmailServiceImpl service = new AliEmailServiceImpl();
+        ReflectionTestUtils.setField(service, "localMockEnabled", true);
+        try (var clients = mockConstruction(DefaultAcsClient.class)) {
+            service.validateConfiguration();
+            String code = service.sendVerificationCode("demo@example.test");
+            assertTrue(code.matches("[0-9]{6}"));
+            assertTrue(output.getOut().contains("收件邮箱=demo@example.test 验证码=" + code));
+            assertTrue(output.getOut().contains("未发送真实邮件"));
+            assertTrue(clients.constructed().isEmpty());
+        }
     }
 
     @Test
-    void serviceImplementsEmailService() {
-        assertTrue(aliEmailService instanceof EmailService);
+    void productionRejectsLocalModeAtStartup() {
+        AliEmailServiceImpl service = new AliEmailServiceImpl();
+        ReflectionTestUtils.setField(service, "localMockEnabled", true);
+        ReflectionTestUtils.setField(service, "productionReady", true);
+        assertThrows(IllegalStateException.class, service::validateConfiguration);
     }
 
-    private static void assertTrue(boolean value) {
-        org.junit.jupiter.api.Assertions.assertTrue(value);
+    @Test
+    void productionRejectsLocalModeBeforeLoggingCode(CapturedOutput output) {
+        AliEmailServiceImpl service = new AliEmailServiceImpl();
+        ReflectionTestUtils.setField(service, "localMockEnabled", true);
+        ReflectionTestUtils.setField(service, "productionReady", true);
+        try (var clients = mockConstruction(DefaultAcsClient.class)) {
+            assertThrows(IllegalStateException.class,
+                    () -> service.sendVerificationCode("demo@example.test"));
+            assertFalse(output.getOut().contains("验证码="));
+            assertTrue(clients.constructed().isEmpty());
+        }
+    }
+
+    @Test
+    void defaultModeStillUsesMailProviderWithoutLoggingCode(CapturedOutput output) throws Exception {
+        AliEmailServiceImpl service = new AliEmailServiceImpl();
+        ReflectionTestUtils.setField(service, "accessKeyId", "test-id");
+        ReflectionTestUtils.setField(service, "accessKeySecret", "test-secret");
+        ReflectionTestUtils.setField(service, "accountName", "sender@example.test");
+        ReflectionTestUtils.setField(service, "replyToAddress", "false");
+        CommonResponse response = new CommonResponse();
+        response.setData("{\"RequestId\":\"test\"}");
+        try (var clients = mockConstruction(DefaultAcsClient.class,
+                (client, context) -> when(client.getCommonResponse(any(CommonRequest.class)))
+                        .thenReturn(response))) {
+            service.validateConfiguration();
+            String code = service.sendVerificationCode("demo@example.test");
+            assertTrue(code.matches("[0-9]{6}"));
+            assertEquals(1, clients.constructed().size());
+            verify(clients.constructed().get(0)).getCommonResponse(any(CommonRequest.class));
+            assertFalse(output.getOut().contains("验证码="));
+        }
     }
 }

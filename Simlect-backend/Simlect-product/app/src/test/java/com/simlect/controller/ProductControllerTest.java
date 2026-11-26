@@ -15,6 +15,8 @@ import com.simlect.utils.AuthCookieHelper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -66,6 +68,9 @@ class ProductControllerTest {
         mockMvc.perform(get("/product/loadCategory"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("success"));
+
+        verify(sysCategoryService).findListByParam(argThat(q ->
+                Boolean.TRUE.equals(q.getParent()) && Boolean.TRUE.equals(q.getPropertyQuery())));
     }
 
     @Test
@@ -79,7 +84,8 @@ class ProductControllerTest {
                 .andExpect(jsonPath("$.status").value("success"));
 
         verify(productInfoService).findListByPage(argThat(q ->
-                1 == q.getCommendType() && 1 == q.getStatus()));
+                1 == q.getCommendType() && 1 == q.getStatus()
+                        && "create_time desc, product_id asc".equals(q.getOrderBy())));
     }
 
     @Test
@@ -96,8 +102,8 @@ class ProductControllerTest {
                 .andExpect(status().isOk());
 
         verify(productInfoService).findListByPage(argThat(q ->
-                "min_price asc, total_sale desc".equals(q.getOrderBy())
-                        && q.getCategoryIdOrPCategoryId() == null));
+                "min_price asc, total_sale desc, product_id asc".equals(q.getOrderBy())
+                        && q.getCategoryIdOrPCategoryId() == null && Integer.valueOf(0).equals(q.getCommendType())));
     }
 
     @Test
@@ -113,8 +119,58 @@ class ProductControllerTest {
                 .andExpect(status().isOk());
 
         verify(productInfoService).findListByPage(argThat(q ->
-                "total_sale desc, min_price asc".equals(q.getOrderBy())
+                "total_sale desc, min_price asc, product_id asc".equals(q.getOrderBy())
                         && "C1".equals(q.getCategoryIdOrPCategoryId())));
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+            "price,asc,'min_price asc, total_sale desc, product_id asc'",
+            "price,desc,'min_price desc, total_sale desc, product_id asc'",
+            "sale,desc,'total_sale desc, min_price asc, product_id asc'",
+            "default,desc,'commend_type desc, total_sale desc, create_time desc, product_id asc'"
+    })
+    void loadProduct_allSortsEndWithUniqueId(String field, String direction, String expected) throws Exception {
+        PaginationResultVO<ProductInfo> page = new PaginationResultVO<>();
+        page.setList(new ArrayList<>());
+        when(productInfoService.findListByPage(any())).thenReturn(page);
+        mockMvc.perform(post("/product/loadProduct").param("pageNo", "1")
+                .param("sortField", field).param("sortType", direction)).andExpect(status().isOk());
+        verify(productInfoService).findListByPage(argThat(q -> expected.equals(q.getOrderBy())));
+    }
+
+    @Test
+    void loadProduct_includeRecommendedExplicitlyIncludesAllOnSale() throws Exception {
+        PaginationResultVO<ProductInfo> page = new PaginationResultVO<>();
+        page.setList(new ArrayList<>());
+        when(productInfoService.findListByPage(any())).thenReturn(page);
+        mockMvc.perform(post("/product/loadProduct").param("pageNo", "1")
+                .param("includeRecommended", "true")).andExpect(status().isOk());
+        verify(productInfoService).findListByPage(argThat(q -> q.getCommendType() == null
+                && q.getCategoryIdOrPCategoryId() == null && Integer.valueOf(1).equals(q.getStatus())));
+    }
+
+    @Test
+    void loadProduct_legacyEmptyCategoryStillIncludesAll() throws Exception {
+        PaginationResultVO<ProductInfo> page = new PaginationResultVO<>();
+        page.setList(new ArrayList<>());
+        when(productInfoService.findListByPage(any())).thenReturn(page);
+        mockMvc.perform(post("/product/loadProduct").param("pageNo", "1")
+                .param("categoryId", "")).andExpect(status().isOk());
+        verify(productInfoService).findListByPage(argThat(q -> q.getCommendType() == null));
+    }
+
+    @Test
+    void loadProduct_includeRecommendedKeepsCategoryAndPriceFilters() throws Exception {
+        PaginationResultVO<ProductInfo> page = new PaginationResultVO<>();
+        page.setList(new ArrayList<>());
+        when(productInfoService.findListByPage(any())).thenReturn(page);
+        mockMvc.perform(post("/product/loadProduct").param("pageNo", "2")
+                .param("includeRecommended", "true").param("categoryId", "C1")
+                .param("priceFrom", "10").param("priceTo", "300")).andExpect(status().isOk());
+        verify(productInfoService).findListByPage(argThat(q -> "C1".equals(q.getCategoryIdOrPCategoryId())
+                && new BigDecimal("10").equals(q.getPriceFrom()) && new BigDecimal("300").equals(q.getPriceTo())
+                && Integer.valueOf(2).equals(q.getPageNo())));
     }
 
     @Test

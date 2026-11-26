@@ -100,6 +100,7 @@ const request = (config) => {
             }
         },
         responseType: responseType,
+        timeout: config.timeout || 10000,
         headers: headers,
         showLoading: showLoading,
         errorCallback: config.errorCallback,

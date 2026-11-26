@@ -90,6 +90,10 @@ spring:
               uri: lb://simlect-product
               predicates:
                 - Path=/internal/product/**
+            - id: internal-search-tool
+              uri: lb://simlect-search
+              predicates:
+                - Path=/internal/search/tool/**
             - id: internal-coupon
               uri: lb://simlect-coupon
               predicates:
@@ -152,6 +156,13 @@ spring:
                 - Path=/api/account/**,/api/sign/**,/api/captcha/**,/api/userAddress/**,/api/userBrowse/**,/api/browseHistory/**,/api/userFavorite/**,/api/userMember/**,/api/userNotification/**,/api/location/**,/api/file/**
               filters:
                 - RewritePath=/api/(?<segment>.*), /$\{segment}
+            # Keep old clients working while the web app uses /api/search/products.
+            - id: product-search-legacy
+              uri: lb://simlect-search
+              predicates:
+                - Path=/api/product/search
+              filters:
+                - SetPath=/search/products
             - id: product
               uri: lb://simlect-product
               predicates:
@@ -227,6 +238,7 @@ simlect:
         - /api/order/comment/loadComment
         - /api/order/comment/getProductCommentStats
         - /api/search/loadHotKeywords
+        - /api/search/products
         - /api/file/getResource
         - /api/userMember/getLevelBadge
         - /api/notify/alipayNotify

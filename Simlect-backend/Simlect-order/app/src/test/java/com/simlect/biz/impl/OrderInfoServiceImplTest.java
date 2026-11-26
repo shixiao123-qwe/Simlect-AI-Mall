@@ -122,8 +122,28 @@ class OrderInfoServiceImplTest {
     private OrderInfo waitPayOrder;
     private OrderInfo paidOrder;
 
+    @Mock
+    private com.simlect.mappers.AfterSaleMapper afterSaleMapper;
+
     @BeforeEach
     void setUp() {
+        when(afterSaleMapper.activeForUpdate(anyString())).thenReturn(null);
+        when(afterSaleMapper.lockOrder(anyString())).thenAnswer(invocation -> {
+            List<OrderInfo> orders = orderInfoMapper.selectList(new OrderInfoQuery());
+            return orders.isEmpty() ? null : orders.get(0);
+        });
+        when(afterSaleMapper.lockItem(anyString())).thenAnswer(invocation -> {
+            List<OrderInfo> orders = orderInfoMapper.selectList(new OrderInfoQuery());
+            if (orders.isEmpty() || orders.get(0).getOrderItemList() == null) return null;
+            return orders.get(0).getOrderItemList().stream()
+                    .filter(item -> invocation.getArgument(0).equals(item.getOrderItemId())).findFirst().orElse(null);
+        });
+        when(orderInfoMapper.selectForRefundByOrderId(anyString())).thenAnswer(invocation -> {
+            List<OrderInfo> orders = orderInfoMapper.selectList(new OrderInfoQuery());
+            return orders.isEmpty() ? null : orders.get(0);
+        });
+        when(orderInfoMapper.selectRefundLogisticsStatus(ORDER_ID)).thenReturn(0);
+
         OrderStateMachine orderStateMachine = new OrderStateMachine();
         ReflectionTestUtils.setField(orderStateMachine, "orderInfoMapper", orderInfoMapper);
         ReflectionTestUtils.setField(service, "orderStateMachine", orderStateMachine);
@@ -168,8 +188,137 @@ class OrderInfoServiceImplTest {
         return o;
     }
 
+    @Test void callbackMissingAmountCannotTouchBusinessEvenAfterClose() {
+        when(orderInfoMapper.selectList(any())).thenReturn(List.of(order(OrderStatusEnum.CLOSED)));
+        assertThrows(BusinessException.class,()->service.paySuccess(new PayOrderNotifyDTO(PAY_ORDER_ID,"CH202608150001")));
+        verifyNoPaymentEffects();
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"99.99","100.01","1000.00","100.000","0.00","-1.00"})
+    void callbackAmountMustMatchExactlyWithoutCentTolerance(String amount) {
+        when(orderInfoMapper.selectList(any())).thenReturn(List.of(waitPayOrder));
+        assertThrows(BusinessException.class,()->service.paySuccess(notifyDto(amount)));
+        verifyNoPaymentEffects();
+    }
+
+    @Test void invalidAmountCannotHideBehindAlreadyPaidIdempotency() {
+        when(orderInfoMapper.selectList(any())).thenReturn(List.of(paidOrder));
+        assertThrows(BusinessException.class,()->service.paySuccess(notifyDto("99.99")));
+        verifyNoPaymentEffects();
+    }
+
+    @Test void callbackCannotReplaceBoundChannelTransaction() {
+        paidOrder.setChannelOrderId("ORIGINAL_CHANNEL_TRADE");
+        when(orderInfoMapper.selectList(any())).thenReturn(List.of(paidOrder));
+        assertThrows(BusinessException.class,()->service.paySuccess(notifyDto()));
+        verifyNoPaymentEffects();
+    }
+
+    @Test void callbackCannotPayAnUnrelatedOrder() {
+        waitPayOrder.setPayOrderId("OTHER_PAY_ORDER");
+        when(orderInfoMapper.selectList(any())).thenReturn(List.of(waitPayOrder));
+        assertThrows(BusinessException.class,()->service.paySuccess(notifyDto()));
+        verifyNoPaymentEffects();
+    }
+
+    @Test void repeatedValidCallbacksOnlyWriteOnceAndKeepBoundTransaction() {
+        when(orderInfoMapper.selectList(any())).thenReturn(List.of(waitPayOrder));
+        when(orderLogisticsInfoMapper.selectByOrderId(ORDER_ID)).thenReturn(logistics());
+        when(orderInfoMapper.updateByParam(any(),any())).thenReturn(1);
+        service.paySuccess(notifyDto());
+        service.paySuccess(notifyDto("100.0"));
+        assertEquals(OrderStatusEnum.PAID.getStatus(),waitPayOrder.getOrderStatus());
+        assertEquals("CH202608150001",waitPayOrder.getChannelOrderId());
+        verify(orderInfoMapper,times(1)).updateByParam(any(),any());
+        verify(payFeignSupport,times(1)).markSuccess(PAY_ORDER_ID,"CH202608150001");
+        verify(transactionalMqSender,times(1)).sendAfterCommit(anyString(),anyString(),any(),anyString(),any());
+    }
+
+    private void verifyNoPaymentEffects() {
+        verify(orderInfoMapper,never()).updateByParam(any(),any());
+        verifyNoInteractions(orderLogisticsInfoMapper,orderItemMapper,payFeignSupport,
+                stockFeignSupport,couponFeignSupport,transactionalMqSender);
+    }
+
+    @Test void paymentWinsRaceWithTimeoutWithoutClosingOrRestocking() throws Exception {
+        paymentTimeoutRace(true);
+    }
+
+    @Test void timeoutWinsRaceWithPaymentWithoutShippingAndKeepsLatePaymentHandling() throws Exception {
+        paymentTimeoutRace(false);
+    }
+
+    /** Real threads and service methods, modeled distributed lock and conditional SQL (not a Redis/MySQL IT). */
+    private void paymentTimeoutRace(boolean paymentFirst) throws Exception {
+        var mutex=new java.util.concurrent.locks.ReentrantLock();
+        var firstEntered=new java.util.concurrent.CountDownLatch(1);
+        var secondArrived=new java.util.concurrent.CountDownLatch(1);
+        var arrivals=new java.util.concurrent.atomic.AtomicInteger();
+        var active=new java.util.concurrent.atomic.AtomicInteger();
+        var maxActive=new java.util.concurrent.atomic.AtomicInteger();
+        var closeMarked=new java.util.concurrent.atomic.AtomicBoolean();
+        var lateRefunded=new java.util.concurrent.atomic.AtomicBoolean();
+        when(orderInfoMapper.selectByOrderId(ORDER_ID)).thenReturn(waitPayOrder);
+        when(orderInfoMapper.selectList(any())).thenReturn(List.of(waitPayOrder));
+        when(orderLogisticsInfoMapper.selectByOrderId(ORDER_ID)).thenReturn(logistics());
+        when(orderItemMapper.selectList(any())).thenReturn(List.of(orderItem()));
+        when(redisComponent.isPayOrderCloseMarked(PAY_ORDER_ID)).thenAnswer(i->closeMarked.get());
+        when(redisComponent.tryMarkPayOrderCloseOnce(PAY_ORDER_ID)).thenAnswer(i->closeMarked.compareAndSet(false,true));
+        when(redisComponent.tryMarkLatePaymentRefundOnce(PAY_ORDER_ID)).thenAnswer(i->lateRefunded.compareAndSet(false,true));
+        when(orderInfoMapper.updateByParam(any(),any())).thenAnswer(i->{
+            OrderInfo patch=i.getArgument(0);OrderInfoQuery query=i.getArgument(1);
+            if (!java.util.Objects.equals(waitPayOrder.getOrderStatus(),query.getOrderStatus())) return 0;
+            waitPayOrder.setOrderStatus(patch.getOrderStatus());
+            if(patch.getChannelOrderId()!=null)waitPayOrder.setChannelOrderId(patch.getChannelOrderId());
+            return 1;
+        });
+        doAnswer(i->{
+            assertEquals(PAY_ORDER_ID,i.getArgument(0));
+            int arrival=arrivals.incrementAndGet();if(arrival==2)secondArrived.countDown();
+            mutex.lock();
+            try {
+                maxActive.accumulateAndGet(active.incrementAndGet(),Math::max);
+                if(arrival==1){firstEntered.countDown();assertTrue(secondArrived.await(5,java.util.concurrent.TimeUnit.SECONDS));}
+                ((Runnable)i.getArgument(1)).run();return null;
+            } finally {active.decrementAndGet();mutex.unlock();}
+        }).when(redisComponent).runWithPayOrderLifecycleLock(anyString(),any(Runnable.class));
+        java.util.concurrent.Callable<Throwable> payment=()->{try{service.paySuccess(notifyDto());return null;}catch(Throwable error){return error;}};
+        java.util.concurrent.Callable<Throwable> timeout=()->{try{service.cancelUnpaidOrderForPayTimeout(ORDER_ID);return null;}catch(Throwable error){return error;}};
+        var pool=java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            var first=pool.submit(paymentFirst?payment:timeout);
+            assertTrue(firstEntered.await(5,java.util.concurrent.TimeUnit.SECONDS));
+            var second=pool.submit(paymentFirst?timeout:payment);
+            Throwable firstError=first.get(10,java.util.concurrent.TimeUnit.SECONDS);
+            Throwable secondError=second.get(10,java.util.concurrent.TimeUnit.SECONDS);
+            assertNull(firstError);
+            if(paymentFirst)assertTrue(secondError==null || secondError instanceof BusinessException);
+            else assertNull(secondError);
+        } finally {pool.shutdownNow();}
+        assertEquals(1,maxActive.get());assertEquals(2,arrivals.get());
+        verify(orderInfoMapper,times(1)).updateByParam(any(),any());
+        if(paymentFirst) {
+            assertEquals(OrderStatusEnum.PAID.getStatus(),waitPayOrder.getOrderStatus());
+            verify(payFeignSupport).markSuccess(PAY_ORDER_ID,"CH202608150001");
+            verify(payFeignSupport,never()).markClosed(anyString());
+            verify(stockFeignSupport,never()).changeStockBatchIdempotent(anyList(),anyString());
+            verify(payFeignSupport,never()).refund(anyString(),anyString(),any(),anyString());
+        } else {
+            assertEquals(OrderStatusEnum.CLOSED.getStatus(),waitPayOrder.getOrderStatus());
+            verify(payFeignSupport).markClosed(PAY_ORDER_ID);
+            verify(stockFeignSupport).changeStockBatchIdempotent(anyList(),eq("order-close-restock:"+PAY_ORDER_ID));
+            verify(payFeignSupport).refund(eq(PAY_ORDER_ID),startsWith("LATE"),eq(new BigDecimal("100.00")),anyString());
+            verify(transactionalMqSender,never()).sendAfterCommit(anyString(),anyString(),any(),anyString(),any());
+        }
+    }
+
     private PayOrderNotifyDTO notifyDto() {
-        return new PayOrderNotifyDTO(PAY_ORDER_ID, "CH202608150001");
+        return notifyDto("100.00");
+    }
+
+    private PayOrderNotifyDTO notifyDto(String amount) {
+        return new PayOrderNotifyDTO(PAY_ORDER_ID, "CH202608150001", new BigDecimal(amount));
     }
 
     private OrderLogisticsInfo logistics() {
@@ -205,7 +354,7 @@ class OrderInfoServiceImplTest {
         when(orderLogisticsInfoMapper.selectByOrderId("O202608150002")).thenReturn(null);
         when(orderInfoMapper.updateByParam(any(OrderInfo.class), any(OrderInfoQuery.class))).thenReturn(1);
 
-        service.paySuccess(notifyDto());
+        service.paySuccess(notifyDto("200.00"));
 
         verify(orderInfoMapper, times(2)).updateByParam(any(OrderInfo.class), any(OrderInfoQuery.class));
         verify(transactionalMqSender, times(2)).sendAfterCommit(eq(RabbitMQConfig.PAY_EXCHANGE),
@@ -346,13 +495,13 @@ class OrderInfoServiceImplTest {
     }
 
     @Test
-    void paySuccess_refundZeroAmount_skipRefund() {
+    void paySuccess_missingOrderAmount_rejectsBeforeRefund() {
         OrderInfo zero = order(OrderStatusEnum.CLOSED);
         zero.setAmount(null);
         when(orderInfoMapper.selectList(any(OrderInfoQuery.class))).thenReturn(List.of(zero));
         when(redisComponent.isPayOrderCloseMarked(PAY_ORDER_ID)).thenReturn(true);
 
-        service.paySuccess(notifyDto());
+        assertThrows(BusinessException.class, () -> service.paySuccess(notifyDto("0.01")));
 
         verify(payFeignSupport, never()).refund(anyString(), anyString(), any(), anyString());
     }
@@ -384,7 +533,7 @@ when(orderInfoMapper.selectList(any(OrderInfoQuery.class)))
 .thenReturn(List.of(order(OrderStatusEnum.PAID), order(OrderStatusEnum.PAID)));
 
 // 部分子单失败不再抛异常回滚整体（避免回调无限重试）
-service.paySuccess(notifyDto());
+service.paySuccess(notifyDto("200.00"));
 
 verify(payFeignSupport, never()).markSuccess(anyString(), anyString());
 }
@@ -464,7 +613,7 @@ when(orderInfoMapper.selectList(any(OrderInfoQuery.class)))
 .thenReturn(List.of(completed, completed));
 
 // 部分失败走冲突处理，不抛异常回滚整体
-service.paySuccess(notifyDto());
+service.paySuccess(notifyDto("200.00"));
 
 verify(payFeignSupport, never()).markSuccess(anyString(), anyString());
 }
@@ -1107,7 +1256,9 @@ verify(payFeignSupport, never()).markSuccess(anyString(), anyString());
 
     @Test
     void refund_itemAlreadyRefunded_throws() {
-        when(orderInfoMapper.selectList(any(OrderInfoQuery.class))).thenReturn(List.of(orderWithItems(1)));
+        OrderInfo persisted = orderWithItems(1);
+        persisted.getOrderItemList().get(0).setOrderItemStatus(OrderItemStatusEnum.REFUND.getStatus());
+        when(orderInfoMapper.selectList(any(OrderInfoQuery.class))).thenReturn(List.of(persisted));
         OrderItem item = refundableItem();
         item.setOrderItemStatus(OrderItemStatusEnum.REFUND.getStatus());
         assertThrows(BusinessException.class, () -> service.refund(item, USER_ID));
@@ -1801,4 +1952,203 @@ verify(payFeignSupport, never()).markSuccess(anyString(), anyString());
         verify(remoteCompensateRecorder).recordCouponUnlock(anyString(), eq("UC1"), eq(USER_ID),
                 eq(UserCouponStatusEnum.CANT.getStatus()), eq(UserCouponStatusEnum.NOUSE.getStatus()), any(Exception.class));
     }
+
+    @Test
+    void reviewedCompletedReturn_refundsButDamagedGoodsNeverRestock() {
+        OrderInfo o = orderWithItems(1);o.setOrderStatus(OrderStatusEnum.COMPLETED.getStatus());
+        when(orderInfoMapper.selectByOrderId(ORDER_ID)).thenReturn(o);
+        when(orderInfoMapper.selectList(any(OrderInfoQuery.class))).thenReturn(List.of(o));
+        when(redisComponent.tryMarkOrderRefundOnce(anyString())).thenReturn(true);
+        when(orderItemMapper.updateByParam(any(OrderItem.class),any(OrderItemQuery.class))).thenReturn(1);
+        when(orderInfoMapper.updateByParam(any(OrderInfo.class),any(OrderInfoQuery.class))).thenReturn(1);
+        service.refundAfterSale(refundableItem(),USER_ID,false);
+        verify(payFeignSupport).refund(eq(PAY_ORDER_ID),anyString(),eq(new BigDecimal("100.00")),anyString());
+        verify(stockFeignSupport,never()).changeStockBatchIdempotent(anyList(),anyString());
+        var patch=ArgumentCaptor.forClass(OrderInfo.class);verify(orderInfoMapper).updateByParam(patch.capture(),any());
+        assertEquals(OrderStatusEnum.REFUNDED.getStatus(),patch.getValue().getOrderStatus());
+    }
+    @Test
+    void reviewedCompletedReturn_resellableGoodsUseIdempotentRestock() {
+        OrderInfo o=orderWithItems(1);o.setOrderStatus(OrderStatusEnum.COMPLETED.getStatus());
+        when(orderInfoMapper.selectByOrderId(ORDER_ID)).thenReturn(o);
+        when(orderInfoMapper.selectList(any(OrderInfoQuery.class))).thenReturn(List.of(o));
+        when(redisComponent.tryMarkOrderRefundOnce(anyString())).thenReturn(true);
+        when(orderItemMapper.updateByParam(any(OrderItem.class),any(OrderItemQuery.class))).thenReturn(1);
+        when(orderInfoMapper.updateByParam(any(OrderInfo.class),any(OrderInfoQuery.class))).thenReturn(1);
+        service.refundAfterSale(refundableItem(),USER_ID,true);
+        verify(stockFeignSupport).changeStockBatchIdempotent(anyList(),startsWith("order-refund-restock:"));
+    }
+    @Test
+    void directUserRefund_doesNotGainCompletedOrderPermission() {
+        OrderInfo o=orderWithItems(1);o.setOrderStatus(OrderStatusEnum.COMPLETED.getStatus());
+        when(orderInfoMapper.selectList(any(OrderInfoQuery.class))).thenReturn(List.of(o));
+        assertThrows(BusinessException.class,()->service.refund(refundableItem(),USER_ID));
+        verify(payFeignSupport,never()).refund(anyString(),anyString(),any(),anyString());
+    }
+    @Test
+    void directRefundCannotBypassActiveAfterSaleRequest() {
+        when(orderInfoMapper.selectList(any(OrderInfoQuery.class))).thenReturn(List.of(orderWithItems(1)));
+        when(afterSaleMapper.activeForUpdate(anyString())).thenReturn(java.util.Map.of("requestId","active"));
+        BusinessException failure=assertThrows(BusinessException.class,()->service.refund(refundableItem(),USER_ID));
+        assertTrue(failure.getMessage().contains("我的售后申请"));
+        verify(payFeignSupport,never()).refund(anyString(),anyString(),any(),anyString());
+        verify(stockFeignSupport,never()).changeStockBatchIdempotent(anyList(),anyString());
+    }
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"2,0", "2,1", "3,2", "7,1", "7,2", "1,1"})
+    void directRefundRejectsShippedOrInconsistentLogisticsWithoutSideEffects(int status, int logistics) {
+        OrderInfo persisted = orderWithItems(1);
+        persisted.setOrderStatus(status);
+        when(orderInfoMapper.selectList(any())).thenReturn(List.of(persisted));
+        when(orderInfoMapper.selectRefundLogisticsStatus(ORDER_ID)).thenReturn(logistics);
+
+        assertThrows(BusinessException.class, () -> service.refund(refundableItem(), USER_ID));
+
+        verifyNoInteractions(payFeignSupport, stockFeignSupport);
+        verify(orderItemMapper, never()).updateByParam(any(), any());
+        verify(orderInfoMapper, never()).updateByParam(any(), any());
+        verify(redisComponent, never()).tryMarkOrderRefundOnce(anyString());
+        assertEquals(1, persisted.getOrderItemList().get(0).getOrderItemStatus());
+    }
+
+    @Test
+    void directRefundMissingLogisticsFailsClosed() {
+        when(orderInfoMapper.selectList(any())).thenReturn(List.of(orderWithItems(1)));
+        when(orderInfoMapper.selectRefundLogisticsStatus(ORDER_ID)).thenReturn(null);
+        assertThrows(BusinessException.class, () -> service.refund(refundableItem(), USER_ID));
+        verifyNoInteractions(payFeignSupport, stockFeignSupport);
+    }
+
+    @Test
+    void directRefundReadsShipmentAfterWaitingForOrderLock() {
+        OrderInfo stale = orderWithItems(1);
+        OrderInfo current = orderWithItems(1);
+        current.setOrderStatus(OrderStatusEnum.SHIPPED.getStatus());
+        when(orderInfoMapper.selectList(any())).thenReturn(List.of(stale));
+        doReturn(current).when(afterSaleMapper).lockOrder(ORDER_ID);
+        doReturn(current).when(orderInfoMapper).selectForRefundByOrderId(ORDER_ID);
+        assertThrows(BusinessException.class, () -> service.refund(refundableItem(), USER_ID));
+        verifyNoInteractions(payFeignSupport, stockFeignSupport);
+    }
+
+    @Test
+    void detachedItemCannotOverridePersistedRefundStatusOrOwnership() {
+        OrderInfo persisted = orderWithItems(1);
+        persisted.getOrderItemList().get(0).setOrderItemStatus(0);
+        when(orderInfoMapper.selectList(any())).thenReturn(List.of(persisted));
+        assertThrows(BusinessException.class, () -> service.refund(refundableItem(), USER_ID));
+        OrderItem otherOrderItem = refundableItem();
+        otherOrderItem.setOrderId("OTHER_ORDER");
+        when(afterSaleMapper.lockItem(anyString())).thenReturn(otherOrderItem);
+        assertThrows(BusinessException.class, () -> service.refund(refundableItem(), USER_ID));
+        verifyNoInteractions(payFeignSupport, stockFeignSupport);
+    }
+
+    @Test
+    void applicationWinningConcurrentOrderLockBlocksLegacyRefund() throws Exception {
+        OrderInfo persisted = orderWithItems(1);
+        OrderItem item = persisted.getOrderItemList().get(0);
+        when(orderInfoMapper.selectList(any())).thenReturn(List.of(persisted));
+        when(orderInfoMapper.selectByOrderId(ORDER_ID)).thenReturn(persisted);
+        when(orderItemMapper.selectByOrderItemId(item.getOrderItemId())).thenReturn(item);
+        var applications = new java.util.concurrent.ConcurrentHashMap<String, Map<String, Object>>();
+        when(afterSaleMapper.byId(anyString())).thenReturn(null);
+        when(afterSaleMapper.active(anyString())).thenReturn(null);
+        when(afterSaleMapper.insert(any())).thenAnswer(invocation -> {
+            Map<String, Object> request = invocation.getArgument(0);
+            applications.put(item.getOrderItemId(), request);
+            return 1;
+        });
+        when(afterSaleMapper.activeForUpdate(item.getOrderItemId()))
+                .thenAnswer(invocation -> applications.get(item.getOrderItemId()));
+        var refundWaiting = new java.util.concurrent.CountDownLatch(1);
+        var applicationCompleted = new java.util.concurrent.CountDownLatch(1);
+        doAnswer(invocation -> {
+            if (Thread.currentThread().getName().equals("legacy-refund")) {
+                refundWaiting.countDown();
+                assertTrue(applicationCompleted.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            }
+            return persisted;
+        }).when(afterSaleMapper).lockOrder(ORDER_ID);
+        var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        Thread refund = new Thread(() -> {
+            try { service.refund(refundableItem(), USER_ID); }
+            catch (Throwable error) { failure.set(error); }
+        }, "legacy-refund");
+        refund.start();
+        try {
+            assertTrue(refundWaiting.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            var afterSale = new com.simlect.biz.AfterSaleService(orderInfoMapper, orderItemMapper, afterSaleMapper);
+            afterSale.create(USER_ID, new com.simlect.entity.dto.AfterSaleDTO.Create(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", item.getOrderItemId(), "refund", "用户申请退款"));
+        } finally {
+            applicationCompleted.countDown();
+            refund.join(5000);
+        }
+        assertFalse(refund.isAlive());
+        assertInstanceOf(BusinessException.class, failure.get());
+        assertTrue(failure.get().getMessage().contains("处理中售后"));
+        verifyNoInteractions(payFeignSupport, stockFeignSupport);
+        verify(orderItemMapper, never()).updateByParam(any(), any());
+    }
+
+    @Test
+    void partialUnshippedOrderCanUseQuickRefund() {
+        OrderInfo persisted = orderWithItems(1);
+        persisted.setOrderStatus(OrderStatusEnum.PARTIALLY_REFUNDED.getStatus());
+        when(orderInfoMapper.selectList(any())).thenReturn(List.of(persisted));
+        when(redisComponent.tryMarkOrderRefundOnce(anyString())).thenReturn(true);
+        when(orderItemMapper.updateByParam(any(), any())).thenReturn(1);
+        when(orderInfoMapper.updateByParam(any(), any())).thenReturn(1);
+        service.refund(refundableItem(), USER_ID);
+        verify(payFeignSupport).refund(eq(PAY_ORDER_ID), anyString(), eq(new BigDecimal("100.00")), anyString());
+    }
+
+    @Test
+    void nullPersistedItemStatusFailsBeforeAnyRefundEffects() {
+        OrderInfo persisted = orderWithItems(1);
+        persisted.getOrderItemList().get(0).setOrderItemStatus(null);
+        when(orderInfoMapper.selectList(any())).thenReturn(List.of(persisted));
+        assertThrows(BusinessException.class, () -> service.refund(refundableItem(), USER_ID));
+        verifyNoInteractions(payFeignSupport, stockFeignSupport);
+    }
+
+    @Test
+    void concurrentReviewedAndLegacyRefundOnlyReviewedPathCanExecute() throws Exception {
+        OrderInfo persisted = orderWithItems(1);
+        persisted.setOrderStatus(OrderStatusEnum.SHIPPED.getStatus());
+        when(orderInfoMapper.selectList(any())).thenReturn(List.of(persisted));
+        when(orderInfoMapper.selectByOrderId(ORDER_ID)).thenReturn(persisted);
+        when(afterSaleMapper.activeForUpdate(anyString())).thenReturn(Map.of("requestId", "approved-request"));
+        when(redisComponent.tryMarkOrderRefundOnce(anyString())).thenReturn(true);
+        when(orderItemMapper.updateByParam(any(), any())).thenReturn(1);
+        when(orderInfoMapper.updateByParam(any(), any())).thenReturn(1);
+        var ready = new java.util.concurrent.CountDownLatch(2);
+        Object lifecycleLock = new Object();
+        doAnswer(invocation -> {
+            ready.countDown();
+            assertTrue(ready.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            synchronized (lifecycleLock) { invocation.<Runnable>getArgument(1).run(); }
+            return null;
+        }).when(redisComponent).runWithPayOrderLifecycleLock(anyString(), any(Runnable.class));
+        var legacyFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var reviewedFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        Thread legacy = new Thread(() -> {
+            try { service.refund(refundableItem(), USER_ID); }
+            catch (Throwable error) { legacyFailure.set(error); }
+        });
+        Thread reviewed = new Thread(() -> {
+            try { service.refundAfterSale(refundableItem(), USER_ID, true); }
+            catch (Throwable error) { reviewedFailure.set(error); }
+        });
+        legacy.start(); reviewed.start();
+        legacy.join(5000); reviewed.join(5000);
+        assertFalse(legacy.isAlive()); assertFalse(reviewed.isAlive());
+        assertInstanceOf(BusinessException.class, legacyFailure.get());
+        assertNull(reviewedFailure.get());
+        verify(payFeignSupport, times(1)).refund(anyString(), anyString(), any(), anyString());
+        verify(stockFeignSupport, times(1)).changeStockBatchIdempotent(anyList(), anyString());
+        verify(orderItemMapper, times(1)).updateByParam(any(), any());
+    }
+
 }

@@ -7,7 +7,7 @@
     xmlns="http://www.w3.org/2000/svg"
     viewBox="6 5 20 22"
     role="img"
-    aria-label="简选 Simlect"
+    aria-label="选物 AI 商城"
   >
 
     <!-- [zh] 开始标签 `<path>` -->

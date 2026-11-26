@@ -50,11 +50,12 @@ public class PayNotifyController {
     @PostMapping("/alipayNotify")
     public String alipayNotify(HttpServletRequest request) {
         Map<String, String> params = new HashMap<>();
-        request.getParameterMap().forEach((k, v) -> {
-            if (v != null && v.length > 0) {
-                params.put(k, v[0]);
-            }
-        });
+        for (var entry : request.getParameterMap().entrySet()) {
+            String[] values = entry.getValue();
+            // Reject parameter pollution rather than verifying one value and processing another.
+            if (values == null || values.length != 1 || values[0] == null) return "failure";
+            params.put(entry.getKey(), values[0]);
+        }
         PayChannel payChannel = (PayChannel) SpringContext.getBean(PayChannelEnum.ALIPAY_PC.getBeanName());
         PayOrderNotifyDTO notifyDTO;
         try {
@@ -63,9 +64,13 @@ public class PayNotifyController {
             log.error("支付宝回调验签失败", e);
             return "failure";
         }
-        if (notifyDTO == null || notifyDTO.getPayOrderId() == null) {
+        if (notifyDTO == null) {
             return "success";
         }
+        if (notifyDTO.getPayOrderId() == null || notifyDTO.getPayOrderId().isBlank()
+                || notifyDTO.getChannelOrderId() == null || notifyDTO.getChannelOrderId().isBlank()
+                || notifyDTO.getTotalAmount() == null || notifyDTO.getTotalAmount().signum() <= 0
+                || notifyDTO.getTotalAmount().scale() > 2) return "failure";
         String payOrderId = notifyDTO.getPayOrderId();
         // Redisson 锁（看门狗续期），避免重复回调并发处理；释放由 Redisson 校验持有者
         String lockKey = Constants.REDIS_KEY_PAY_NOTIFY_LOCK + payOrderId;
@@ -74,8 +79,9 @@ public class PayNotifyController {
         try {
             acquired = lock.tryLock(PAY_NOTIFY_LOCK_WAIT_MS, -1, TimeUnit.MILLISECONDS);
             if (!acquired) {
-                log.info("支付宝回调重复或处理中，已忽略 payOrderId={}", payOrderId);
-                return "success";
+                log.info("支付宝回调处理中，等待渠道重试 payOrderId={}", payOrderId);
+                // A busy lock does not prove the holder will commit. Let Alipay retry.
+                return "failure";
             }
             orderFeignSupport.paySuccess(notifyDTO);
         } catch (BusinessException e) {

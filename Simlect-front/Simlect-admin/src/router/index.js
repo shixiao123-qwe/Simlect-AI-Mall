@@ -8,6 +8,7 @@ const DESKTOP_TO_MOBILE = {
   '/product': '/m/product',
   '/product/addProduct': '/m/product/edit',
   '/order/orderList': '/m/order',
+  '/order/afterSale': '/m/order/afterSale',
   '/order/comment': '/m/order/comment',
   '/order/report': '/m/order/report',
   '/setting/imageModeration': '/m/more/imageModeration',
@@ -57,6 +58,7 @@ const router = createRouter({
         { path: 'product/edit/:productId', component: () => import('@/views/product/edit/ProductEdit.vue'), meta: { title: '编辑商品', tab: '/m/product', showBack: true } },
         { path: 'order', component: () => import('@/views/mobile/MobileOrderList.vue'), meta: { title: '订单管理', tab: '/m/order' } },
         { path: 'order/comment', component: () => import('@/views/mobile/MobileOrderComment.vue'), meta: { title: '评价管理', tab: '/m/order', showBack: true } },
+        { path: 'order/afterSale', component: () => import('@/views/order/AfterSaleRequests.vue'), meta: { title: '售后审核', tab: '/m/order', showBack: true } },
         { path: 'order/report', component: () => import('@/views/mobile/MobileCommentReport.vue'), meta: { title: '举报管理', tab: '/m/order', showBack: true } },
         { path: 'more/imageModeration', component: () => import('@/views/mobile/MobileImageModeration.vue'), meta: { title: '图片审核', tab: '/m/more', showBack: true } },
         { path: 'user', component: () => import('@/views/mobile/MobileUserList.vue'), meta: { title: '用户管理', tab: '/m/user' } },
@@ -132,6 +134,7 @@ const router = createRouter({
             itemList: ["商品", "商品管理"]
           }
         },
+        { path: '/order/afterSale', name: '售后审核', component: () => import('@/views/order/AfterSaleRequests.vue'), meta: {itemList:['订单','售后审核']} },
         {
           path: '/order/orderList',
           name: '订单管理',

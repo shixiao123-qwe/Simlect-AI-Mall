@@ -72,10 +72,6 @@ public class RabbitMQNotifyListenerComponent {
     public void handleNotify(NotificationMessageDTO message, Channel channel, Message mqMessage) {
         long deliveryTag = mqMessage.getMessageProperties().getDeliveryTag();
         try {
-            if (!mqListenerHelper.tryBeginConsume(mqMessage, MqListenerHelper.CONSUME_IDEMPOTENCY_TTL_HIGH_SECONDS)) {
-                channel.basicAck(deliveryTag, false);
-                return;
-            }
             UserNotification notification = new UserNotification();
             notification.setNotificationId(StringTools.createNotificationId());
             notification.setUserId(message.getUserId());
@@ -94,12 +90,8 @@ public class RabbitMQNotifyListenerComponent {
             }
         } catch (Exception e) {
             log.error("处理通知消息失败", e);
-            mqListenerHelper.releaseConsume(mqMessage);
-            try {
-                channel.basicNack(deliveryTag, false, true);
-            } catch (IOException ex) {
-                log.error("通知 NACK 失败", ex);
-            }
+            try { mqListenerHelper.nackWithRetryOrDlq(channel,deliveryTag,mqMessage,RabbitMQConfig.NOTIFY_QUEUE,message,e); }
+            catch (IOException failure) { log.warn("通知失败重试异常",failure); }
         }
     }
 
@@ -114,33 +106,16 @@ public class RabbitMQNotifyListenerComponent {
     private void flushBatch() {
         List<PendingNotify> toSave = new ArrayList<>(batchList);
         batchList.clear();
-        List<UserNotification> notifications = new ArrayList<>(toSave.size());
-        for (PendingNotify pending : toSave) {
-            notifications.add(pending.notification);
-        }
-        try {
+        List<MqListenerHelper.Delivery> deliveries=toSave.stream()
+                .map(pending -> new MqListenerHelper.Delivery(pending.mqMessage,pending.channel)).toList();
+        mqListenerHelper.consumeInboxBatch(RabbitMQConfig.NOTIFY_QUEUE,"USER_NOTIFICATION",deliveries,indices -> {
+            List<UserNotification> notifications=indices.stream().map(index -> toSave.get(index).notification).toList();
             userNotificationService.batchInsert(notifications);
-            for (UserNotification notification : notifications) {
-                markPopupAndPush(notification);
-            }
-            for (PendingNotify pending : toSave) {
-                pending.channel.basicAck(pending.deliveryTag, false);
-                mqListenerHelper.clearConsumeRetry(RabbitMQConfig.NOTIFY_QUEUE, pending.mqMessage);
-            }
-            log.info("批量写入通知完成，数量: {}", toSave.size());
-        } catch (Exception e) {
-            log.error("批量写入通知失败", e);
-            // 失败路径：requeue 重投（MQ 层保证重试）+ 释放幂等键允许再次消费；
-            // 不回批（避免跨线程/失效 deliveryTag 重复 ACK 与重复通知）
-            for (PendingNotify pending : toSave) {
-                mqListenerHelper.releaseConsume(pending.mqMessage);
-                try {
-                    pending.channel.basicNack(pending.deliveryTag, false, true);
-                } catch (IOException ex) {
-                    log.error("通知失败 NACK 异常", ex);
-                }
-            }
-        }
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                    new org.springframework.transaction.support.TransactionSynchronization() {
+                        @Override public void afterCommit() { notifications.forEach(RabbitMQNotifyListenerComponent.this::markPopupAndPush); }
+                    });
+        });
     }
 
     private void markPopupAndPush(UserNotification notification) {

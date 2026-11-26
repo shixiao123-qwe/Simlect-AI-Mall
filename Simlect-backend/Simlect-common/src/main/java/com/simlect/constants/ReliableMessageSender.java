@@ -70,6 +70,15 @@ public class ReliableMessageSender {
         sendStandardInternal(exchange, routingKey, message, idempotencyKey);
     }
 
+    /** One confirmed attempt. DB Outbox owns retries; a Redis send flag is not proof of delivery. */
+    public void sendOutboxWithConfirm(String exchange, String routingKey, Object message,
+                                     String idempotencyKey, String attemptId) throws Exception {
+        if (StringTools.isEmpty(idempotencyKey) || StringTools.isEmpty(attemptId)) {
+            throw new IllegalArgumentException("Outbox business key and attempt ID are required");
+        }
+        doSendWithConfirm(exchange, routingKey, message, idempotencyKey, attemptId);
+    }
+
     private void sendHighConcurrency(String exchange, String routingKey, Object message, String idempotencyKey) {
         if (!mqIdempotencyGuard.tryAcquireSend(idempotencyKey, HIGH_IDEMPOTENCY_TTL_SECONDS)) {
             return;
@@ -132,6 +141,11 @@ public class ReliableMessageSender {
 
     private void doSendWithConfirm(String exchange, String routingKey, Object message, String idempotencyKey)
             throws Exception {
+        doSendWithConfirm(exchange, routingKey, message, idempotencyKey, idempotencyKey);
+    }
+
+    private void doSendWithConfirm(String exchange, String routingKey, Object message,
+                                  String idempotencyKey, String attemptId) throws Exception {
         mqPublisherConfirmHelper.sendAndAwaitConfirm(
                 exchange,
                 routingKey,
@@ -144,7 +158,7 @@ public class ReliableMessageSender {
                     props.setDeliveryMode(MessageDeliveryMode.PERSISTENT);
                     return msg;
                 },
-                idempotencyKey);
+                attemptId);
     }
 
     private void saveCompensation(String exchange, String routingKey, Object message,

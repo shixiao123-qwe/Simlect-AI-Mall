@@ -19,6 +19,9 @@ public class RedissionConfig {
     @Value("${spring.data.redis.port:}")
     private String redisPort;
 
+    @Value("${simlect.resources.low-memory:false}")
+    private boolean lowMemory;
+
     // 创建RedissonClient对象
     @Bean(value = "redissonClient",destroyMethod = "shutdown")
     public RedissonClient redissonClient() {
@@ -28,6 +31,15 @@ public class RedissionConfig {
             // 看门狗续期周期：锁超时默认 30s、每 10s 续期一次；与
             // Constants.PAY_ORDER_LIFECYCLE_LOCK_WATCHDOG_MS 保持一致
             config.setLockWatchdogTimeout(30_000);
+            if (lowMemory) {
+                config.setThreads(2);
+                config.setNettyThreads(2);
+                config.useSingleServer()
+                        .setConnectionMinimumIdleSize(1)
+                        .setConnectionPoolSize(8)
+                        .setSubscriptionConnectionMinimumIdleSize(1)
+                        .setSubscriptionConnectionPoolSize(4);
+            }
             config.useSingleServer()
                     .setAddress("redis://" + redisHost + ":" + redisPort)
                     // 长连接保活，避免长时间空闲被 Redis 断开

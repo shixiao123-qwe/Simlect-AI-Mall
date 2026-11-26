@@ -5,7 +5,7 @@ export { locationApi } from './location';
 export type { LocationPayload, LocationWeatherPayload } from './location';
 
 const CACHE_KEYS = {
-  CATEGORY: 'product:category',
+  CATEGORY: 'product:category:v2',
   COMMEND: 'product:commend'
 } as const;
 
@@ -54,7 +54,7 @@ export const productApi = {
       key: productDetailKey(productId),
       ttl: 2 * 60 * 1000
     }),
-  search: (params: Record<string, unknown>) => request.postForm('/product/search', params)
+  search: (params: Record<string, unknown>) => request.postForm('/search/products', params)
 };
 
 export const cartApi = {
@@ -64,6 +64,7 @@ export const cartApi = {
 };
 
 export const orderApi = {
+  confirmLocalDemoPayment: (payOrderId: string) => request.post('/order/localDemo/confirmPayment', { payOrderId }),
   postOrder: (payload: Record<string, unknown>) => request.post('/order/postOrder', payload),
   getPayInfo: (orderId: string) => request.postForm('/order/getPayInfo', { orderId }),
   getOrderInfo: (payOrderId: string) => request.postForm('/order/getOrderInfo', { payOrderId }),
@@ -126,9 +127,13 @@ export const agentApi = {
       {}
     ),
   confirmAction: (actionToken: string) =>
-    request.postForm<{ actionType?: string; success?: boolean; resultMessage?: string }>(
+    request.postForm<{ actionType?: string; success?: boolean; resultMessage?: string; status?: number; actionStatus?: string; retryAllowed?: boolean }>(
       '/agent/confirmAction',
       { actionToken }
+    ),
+  getActionResult: (actionToken: string) =>
+    request.postForm<{ actionType?: string; success?: boolean; resultMessage?: string; status?: number; actionStatus?: string; retryAllowed?: boolean }>(
+      '/agent/getActionResult', { actionToken }
     ),
   cancelAction: (actionToken: string) => request.postForm('/agent/cancelAction', { actionToken })
 };
@@ -236,4 +241,10 @@ export const fileApi = {
         : false;
     return { path, pendingReview };
   }
+};
+
+export const afterSaleApi = {
+  progress: () => request.post('/order/afterSale/progress', {}),
+  detail: (requestId: string) => request.post('/order/afterSale/detail', { requestId }),
+  returnParcel: (payload: {requestId: string; carrier: string; tracking: string}) => request.post('/order/afterSale/returnParcel', payload)
 };

@@ -22,11 +22,12 @@ export default defineConfig({
       // 开发态 /api → Gateway /admin-api（与生产 baseURL 对齐）
       "/admin-api": {
         target: "http://localhost:8080",
-        changeOrigin: true,
+        // Preserve the browser-facing Host for Gateway Origin validation.
+        changeOrigin: false,
       },
       "/api": {
         target: "http://localhost:8080",
-        changeOrigin: true,
+        changeOrigin: false,
         rewrite: (path) => path.replace(/^\/api/, '/admin-api'),
       },
       "/ws": {

@@ -29,6 +29,8 @@
 		<result column="subject" property="subject"  />
 		<collection property="orderItemList" ofType="com.simlect.entity.po.OrderItem">
 			<id column="order_item_id" property="orderItemId" />
+			<result column="order_id" property="orderId" />
+			<result column="refund_amount" property="refundAmount" />
 			<result column="cover" property="cover" />
 			<result column="product_id" property="productId" />
 			<result column="product_name" property="productName" />
@@ -535,4 +537,15 @@
 		select <include refid="base_column_list" /> from order_info o where order_id=#{orderId}
 	</select>
 
+    <!-- Current locking read: do not reuse a pre-lock REPEATABLE READ snapshot for refunds. -->
+    <select id="selectForRefundByOrderId" resultMap="base_result_map">
+        SELECT <include refid="base_column_list" />, i.*
+        FROM order_info o LEFT JOIN order_item i ON i.order_id = o.order_id
+        WHERE o.order_id = #{orderId}
+        ORDER BY i.order_item_id
+        FOR UPDATE
+    </select>
+    <select id="selectRefundLogisticsStatus" resultType="java.lang.Integer">
+        SELECT logistics_status FROM order_logistics_info WHERE order_id = #{orderId} FOR UPDATE
+    </select>
 </mapper>

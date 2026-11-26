@@ -109,6 +109,7 @@
                 <button
                   type="button"
                   class="captcha-btn"
+                  :disabled="captchaLoading"
                   title="点击刷新验证码"
                   @click="changeCheckCode"
                 >
@@ -118,7 +119,7 @@
                     alt="验证码"
                     class="captcha-img"
                   />
-                  <span v-else class="captcha-placeholder">加载中</span>
+                  <span v-else class="captcha-placeholder">{{ captchaLoading ? '加载中…' : '加载失败，点击重试' }}</span>
                 </button>
               </div>
             </el-form-item>
@@ -148,14 +149,21 @@ const router = useRouter()
 const route = useRoute()
 
 const checkCodeInfo = ref({})
+const captchaLoading = ref(false)
 const changeCheckCode = async () => {
-  const result = await proxy.Request({
-    url: proxy.Api.checkCode,
-  })
-  if (!result) {
-    return
+  if (captchaLoading.value) return
+  captchaLoading.value = true
+  checkCodeInfo.value = {}
+  try {
+    const result = await proxy.Request({ url: proxy.Api.checkCode })
+    if (result?.data?.checkCode && result.data.checkCodeKey) {
+      checkCodeInfo.value = result.data
+    }
+  } catch {
+    // The request layer reports errors; keep the captcha retryable.
+  } finally {
+    captchaLoading.value = false
   }
-  checkCodeInfo.value = result.data
 }
 changeCheckCode()
 

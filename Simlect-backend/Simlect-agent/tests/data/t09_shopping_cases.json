@@ -1,0 +1,668 @@
+[
+  {
+    "id": "parse-01",
+    "text": "耳机预算300以内",
+    "expected": {
+      "max_price": "300"
+    },
+    "patch": {
+      "category": "耳机"
+    },
+    "previous": {},
+    "clarify": false
+  },
+  {
+    "id": "parse-02",
+    "text": "预算100-300元的耳机",
+    "expected": {
+      "min_price": "100",
+      "max_price": "300"
+    },
+    "patch": {
+      "category": "耳机"
+    },
+    "previous": {},
+    "clarify": false
+  },
+  {
+    "id": "parse-03",
+    "text": "价格1千到2千元",
+    "expected": {
+      "min_price": "1000",
+      "max_price": "2000"
+    },
+    "patch": {
+      "category": "耳机"
+    },
+    "previous": {},
+    "clarify": false
+  },
+  {
+    "id": "parse-04",
+    "text": "预算1.2万以下",
+    "expected": {
+      "max_price": "12000.0"
+    },
+    "patch": {
+      "category": "耳机"
+    },
+    "previous": {},
+    "clarify": false
+  },
+  {
+    "id": "parse-05",
+    "text": "不超过799.99元",
+    "expected": {
+      "max_price": "799.99"
+    },
+    "patch": {
+      "category": "耳机"
+    },
+    "previous": {},
+    "clarify": false
+  },
+  {
+    "id": "parse-06",
+    "text": "预算0.01元",
+    "expected": {
+      "max_price": "0.01"
+    },
+    "patch": {
+      "category": "耳机"
+    },
+    "previous": {},
+    "clarify": false
+  },
+  {
+    "id": "parse-07",
+    "text": "最低200元",
+    "expected": {
+      "min_price": "200"
+    },
+    "patch": {
+      "category": "耳机"
+    },
+    "previous": {},
+    "clarify": false
+  },
+  {
+    "id": "parse-08",
+    "text": "预算提高到500",
+    "expected": {
+      "max_price": "500"
+    },
+    "patch": {
+      "category": "耳机"
+    },
+    "previous": {
+      "category": "耳机",
+      "max_price": "300"
+    },
+    "clarify": false
+  },
+  {
+    "id": "parse-09",
+    "text": "预算降低到200",
+    "expected": {
+      "max_price": "200"
+    },
+    "patch": {
+      "category": "耳机"
+    },
+    "previous": {
+      "category": "耳机",
+      "max_price": "500"
+    },
+    "clarify": false
+  },
+  {
+    "id": "parse-10",
+    "text": "取消预算",
+    "expected": {
+      "min_price": null,
+      "max_price": null
+    },
+    "patch": {
+      "category": "耳机"
+    },
+    "previous": {
+      "category": "耳机",
+      "min_price": "100",
+      "max_price": "300"
+    },
+    "clarify": false
+  },
+  {
+    "id": "parse-11",
+    "text": "清空条件重新开始",
+    "expected": {
+      "category": null,
+      "max_price": null,
+      "preferences": []
+    },
+    "patch": {},
+    "previous": {
+      "category": "耳机",
+      "max_price": "300",
+      "preferences": [
+        "长续航"
+      ]
+    },
+    "clarify": false
+  },
+  {
+    "id": "parse-12",
+    "text": "换成手机预算1000",
+    "expected": {
+      "category": "手机",
+      "max_price": "1000",
+      "preferences": []
+    },
+    "patch": {
+      "category": "手机",
+      "reset": true
+    },
+    "previous": {
+      "category": "耳机",
+      "preferences": [
+        "低延迟"
+      ]
+    },
+    "clarify": false
+  },
+  {
+    "id": "parse-13",
+    "text": "不要索尼",
+    "expected": {
+      "excluded_brands": [
+        "索尼"
+      ]
+    },
+    "patch": {
+      "category": "耳机"
+    },
+    "previous": {},
+    "clarify": false
+  },
+  {
+    "id": "parse-14",
+    "text": "不要Apple",
+    "expected": {
+      "excluded_brands": [
+        "苹果"
+      ]
+    },
+    "patch": {
+      "category": "耳机"
+    },
+    "previous": {},
+    "clarify": false
+  },
+  {
+    "id": "parse-15",
+    "text": "排除华为",
+    "expected": {
+      "excluded_brands": [
+        "华为"
+      ]
+    },
+    "patch": {
+      "category": "耳机"
+    },
+    "previous": {},
+    "clarify": false
+  },
+  {
+    "id": "parse-16",
+    "text": "不考虑小米",
+    "expected": {
+      "excluded_brands": [
+        "小米"
+      ]
+    },
+    "patch": {
+      "category": "耳机"
+    },
+    "previous": {},
+    "clarify": false
+  },
+  {
+    "id": "parse-17",
+    "text": "优先索尼",
+    "expected": {
+      "preferred_brands": [
+        "索尼"
+      ],
+      "excluded_brands": []
+    },
+    "patch": {
+      "category": "耳机",
+      "preferred_brands": [
+        "索尼"
+      ]
+    },
+    "previous": {},
+    "clarify": false
+  },
+  {
+    "id": "parse-18",
+    "text": "取消品牌排除",
+    "expected": {
+      "excluded_brands": []
+    },
+    "patch": {
+      "clear": [
+        "excluded_brands"
+      ]
+    },
+    "previous": {
+      "category": "耳机",
+      "excluded_brands": [
+        "索尼"
+      ]
+    },
+    "clarify": false
+  },
+  {
+    "id": "parse-19",
+    "text": "清除软偏好",
+    "expected": {
+      "preferences": []
+    },
+    "patch": {
+      "clear": [
+        "preferences"
+      ]
+    },
+    "previous": {
+      "category": "耳机",
+      "preferences": [
+        "长续航"
+      ]
+    },
+    "clarify": false
+  },
+  {
+    "id": "parse-20",
+    "text": "不要二手",
+    "expected": {
+      "hard_attributes": [
+        {
+          "name": "成色",
+          "value": "全新",
+          "operator": "eq"
+        }
+      ]
+    },
+    "patch": {
+      "category": "耳机"
+    },
+    "previous": {},
+    "clarify": false
+  },
+  {
+    "id": "parse-21",
+    "text": "不要黑色",
+    "expected": {
+      "hard_attributes": [
+        {
+          "name": "颜色",
+          "value": "黑色",
+          "operator": "ne"
+        }
+      ]
+    },
+    "patch": {
+      "category": "耳机"
+    },
+    "previous": {},
+    "clarify": false
+  },
+  {
+    "id": "parse-22",
+    "text": "颜色改为白色",
+    "expected": {
+      "hard_attributes": [
+        {
+          "name": "成色",
+          "value": "全新",
+          "operator": "eq"
+        },
+        {
+          "name": "颜色",
+          "value": "白色",
+          "operator": "eq"
+        }
+      ]
+    },
+    "patch": {
+      "hard_attributes": [
+        {
+          "name": "颜色",
+          "value": "白色"
+        }
+      ]
+    },
+    "previous": {
+      "category": "耳机",
+      "hard_attributes": [
+        {
+          "name": "成色",
+          "value": "全新"
+        },
+        {
+          "name": "颜色",
+          "value": "黑色"
+        }
+      ]
+    },
+    "clarify": false
+  },
+  {
+    "id": "parse-23",
+    "text": "运行内存至少8GB",
+    "expected": {
+      "min_price": null,
+      "hard_attributes": [
+        {
+          "name": "运行内存",
+          "value": "8GB",
+          "operator": "gte"
+        }
+      ]
+    },
+    "patch": {
+      "category": "手机",
+      "hard_attributes": [
+        {
+          "name": "运行内存",
+          "value": "8GB",
+          "operator": "gte"
+        }
+      ]
+    },
+    "previous": {},
+    "clarify": false
+  },
+  {
+    "id": "parse-24",
+    "text": "最好长续航",
+    "expected": {
+      "preferences": [
+        "长续航"
+      ],
+      "hard_attributes": []
+    },
+    "patch": {
+      "preferences": [
+        "长续航"
+      ]
+    },
+    "previous": {
+      "category": "耳机"
+    },
+    "clarify": false
+  },
+  {
+    "id": "parse-25",
+    "text": "用于办公",
+    "expected": {
+      "scenario": "办公"
+    },
+    "patch": {
+      "scenario": "办公"
+    },
+    "previous": {
+      "category": "耳机"
+    },
+    "clarify": false
+  },
+  {
+    "id": "parse-26",
+    "text": "不要红色",
+    "expected": {
+      "hard_attributes": [
+        {
+          "name": "颜色",
+          "value": "红色",
+          "operator": "ne"
+        }
+      ]
+    },
+    "patch": {
+      "category": "耳机"
+    },
+    "previous": {},
+    "clarify": false
+  },
+  {
+    "id": "parse-27",
+    "text": "必须256GB存储",
+    "expected": {
+      "hard_attributes": [
+        {
+          "name": "存储容量",
+          "value": "256GB",
+          "operator": "eq"
+        }
+      ]
+    },
+    "patch": {
+      "category": "手机",
+      "hard_attributes": [
+        {
+          "name": "存储容量",
+          "value": "256GB"
+        }
+      ]
+    },
+    "previous": {},
+    "clarify": false
+  },
+  {
+    "id": "parse-28",
+    "text": "想买个苹果",
+    "expected": {},
+    "patch": {
+      "clarification": "您指苹果手机还是水果？"
+    },
+    "previous": {},
+    "clarify": true
+  },
+  {
+    "id": "parse-29",
+    "text": "预算300左右",
+    "expected": {},
+    "patch": {
+      "category": "耳机"
+    },
+    "previous": {},
+    "clarify": true
+  },
+  {
+    "id": "parse-30",
+    "text": "预算500到300元",
+    "expected": {},
+    "patch": {
+      "category": "耳机"
+    },
+    "previous": {},
+    "clarify": true
+  },
+  {
+    "id": "parse-31",
+    "text": "预算改成300",
+    "expected": {},
+    "patch": {
+      "category": "耳机"
+    },
+    "previous": {
+      "category": "耳机",
+      "min_price": "400",
+      "max_price": "500"
+    },
+    "clarify": true
+  },
+  {
+    "id": "parse-32",
+    "text": "预算500且内存至少8GB",
+    "expected": {
+      "max_price": "500",
+      "min_price": null
+    },
+    "patch": {
+      "category": "手机",
+      "hard_attributes": [
+        {
+          "name": "运行内存",
+          "value": "8GB",
+          "operator": "gte"
+        }
+      ]
+    },
+    "previous": {},
+    "clarify": false
+  },
+  {
+    "id": "parse-33",
+    "text": "场景改为游戏",
+    "expected": {
+      "scenario": "游戏",
+      "max_price": "500"
+    },
+    "patch": {
+      "scenario": "游戏"
+    },
+    "previous": {
+      "category": "耳机",
+      "max_price": "500"
+    },
+    "clarify": false
+  },
+  {
+    "id": "parse-34",
+    "text": "保持条件",
+    "expected": {
+      "max_price": "300",
+      "hard_attributes": [
+        {
+          "name": "成色",
+          "value": "全新",
+          "operator": "eq"
+        }
+      ]
+    },
+    "patch": {
+      "max_price": null,
+      "hard_attributes": null
+    },
+    "previous": {
+      "category": "耳机",
+      "max_price": "300",
+      "hard_attributes": [
+        {
+          "name": "成色",
+          "value": "全新"
+        }
+      ]
+    },
+    "clarify": false
+  },
+  {
+    "id": "parse-35",
+    "text": "预算100至800元",
+    "expected": {
+      "min_price": "100",
+      "max_price": "800"
+    },
+    "patch": {
+      "category": "耳机"
+    },
+    "previous": {},
+    "clarify": false
+  },
+  {
+    "id": "parse-36",
+    "text": "不要索尼但也只喜欢索尼",
+    "expected": {},
+    "patch": {
+      "preferred_brands": [
+        "索尼"
+      ]
+    },
+    "previous": {},
+    "clarify": true
+  },
+  {
+    "id": "parse-37",
+    "text": "预算0.001元",
+    "expected": {},
+    "patch": {
+      "category": "耳机"
+    },
+    "previous": {},
+    "clarify": true
+  },
+  {
+    "id": "parse-38",
+    "text": "不买二手且排除SONY",
+    "expected": {
+      "excluded_brands": [
+        "索尼"
+      ],
+      "hard_attributes": [
+        {
+          "name": "成色",
+          "value": "全新",
+          "operator": "eq"
+        }
+      ]
+    },
+    "patch": {
+      "category": "耳机"
+    },
+    "previous": {},
+    "clarify": false
+  },
+  {
+    "id": "parse-39",
+    "text": "增加低延迟偏好",
+    "expected": {
+      "preferences": [
+        "长续航",
+        "低延迟"
+      ]
+    },
+    "patch": {
+      "preferences": [
+        "低延迟"
+      ]
+    },
+    "previous": {
+      "category": "耳机",
+      "preferences": [
+        "长续航"
+      ]
+    },
+    "clarify": false
+  },
+  {
+    "id": "parse-40",
+    "text": "取消最低预算",
+    "expected": {
+      "min_price": null,
+      "max_price": "800"
+    },
+    "patch": {
+      "clear": [
+        "min_price"
+      ]
+    },
+    "previous": {
+      "category": "耳机",
+      "min_price": "500",
+      "max_price": "800"
+    },
+    "clarify": false
+  }
+]

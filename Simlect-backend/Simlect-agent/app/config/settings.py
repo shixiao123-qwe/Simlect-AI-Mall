@@ -42,12 +42,14 @@ class Settings(BaseSettings):
     llm_fallback_model: str = "deepseek-flash"
     llm_timeout: int = 60
     llm_max_retries: int = 3
+    llm_use_responses_api: bool = False
 
     memory_llm_api_key: str = ""
     memory_llm_base_url: str = ""
     memory_llm_model: str = ""
 
     memory_llm_timeout: int | None = None
+    memory_llm_use_responses_api: bool | None = None
 
     embedding_api_key: str = ""
     embedding_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -71,6 +73,7 @@ class Settings(BaseSettings):
     rabbitmq_url: str = "amqp://guest:guest@localhost:5672/"
 
     ai_chat_limit: int = 200
+    vector_search_enabled: bool = True
     rag_top_k: int = 15
     rag_score_threshold: float = 0.5
     history_message_limit: int = 15

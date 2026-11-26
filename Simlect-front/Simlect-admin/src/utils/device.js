@@ -70,6 +70,7 @@ export function resolveDesktopPath(mobilePath) {
   const map = {
     '/m/home': '/home',
     '/m/product': '/product',
+    '/m/order/afterSale': '/order/afterSale',
     '/m/order': '/order/orderList',
     '/m/order/comment': '/order/comment',
     '/m/order/report': '/order/report',

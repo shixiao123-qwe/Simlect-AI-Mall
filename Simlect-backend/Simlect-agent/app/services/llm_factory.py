@@ -4,6 +4,12 @@ from langchain_openai import ChatOpenAI  # import statement — OpenAI 兼容聊
 
 from app.config.settings import Settings, get_settings  # import statement — 配置类与获取方法
 
+def _protocol_options(use_responses: bool) -> dict:
+    if not use_responses:
+        return {"use_responses_api": False}
+    # Keep text/tool-call messages compatible with the existing graph and memory parsers.
+    return {"use_responses_api": True, "output_version": "v0", "store": False}
+
 def create_chat_llm() -> ChatOpenAI:  # 工厂方法 — 类似 Java static factory createChatLlm()
 
     s = get_settings()  # 读取全局配置 — 类似 @Value 注入
@@ -13,6 +19,7 @@ def create_chat_llm() -> ChatOpenAI:  # 工厂方法 — 类似 Java static fact
         model=s.llm_model,
         timeout=s.llm_timeout,
         streaming=True,  # 启用流式输出 — 类似 SSE 逐 token 推送
+        **_protocol_options(s.llm_use_responses_api),
     )
 
 def create_memory_llm() -> ChatOpenAI:  # 工厂方法 — 创建记忆压缩专用 LLM
@@ -25,6 +32,11 @@ def create_memory_llm() -> ChatOpenAI:  # 工厂方法 — 创建记忆压缩专
         model=model,
         timeout=timeout,
         streaming=False,  # 记忆压缩不需要流式
+        **_protocol_options(
+            s.memory_llm_use_responses_api
+            if s.memory_llm_use_responses_api is not None
+            else s.llm_use_responses_api
+        ),
     )
 
 def _resolve_memory_llm_config(s: Settings) -> tuple[str, str, str, int]:  # 私有方法 — 解析记忆 LLM 配置

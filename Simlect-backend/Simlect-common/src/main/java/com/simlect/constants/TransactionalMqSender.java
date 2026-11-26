@@ -13,7 +13,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
  * <p>
  * 【角色】业务（如下单）应调用本类 {@link #sendAfterCommit}，而不是在事务里直接 convertAndSend。
  * 有事务：先写 Outbox 表，afterCommit 再 dispatch；无事务：走 ReliableMessageSender 直发。
- * 补投靠 OutboxDispatchTask 扫 PENDING/FAILED。
+ * 补投靠 OutboxDispatchTask 扫 PENDING/FAILED 与过期 SENDING；领取与结果均由数据库租约约束。
  * <p>
  * 【典型调用链】OrderInfoServiceImpl.postOrder 成功路径 → sendAfterCommit(pay.timeout.delay)
  * → Outbox → RabbitMQ TTL → DLX → 超时关单消费。

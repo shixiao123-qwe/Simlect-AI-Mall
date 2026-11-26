@@ -23,6 +23,10 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/internal/stock")
 public class StockInternalController extends ABaseController {
+    @PostMapping("/readBatch")
+    public ResponseVO<java.util.List<SkuStockDTO>> readBatch(@Valid @RequestBody com.simlect.api.dto.StockReadBatchDTO dto) {
+        return getSuccessResponseVO(skuStockService.readBatch(dto.productIds()));
+    }
 
     @Resource
     private SkuStockService skuStockService;

@@ -41,6 +41,12 @@ import java.util.List;
 
 @Component
 public class StockFeignSupport implements StockBatchCompensatePort {
+    public List<SkuStockDTO> readBatch(List<String> ids) {
+        List<SkuStockDTO> result = feignResponseSupport.call(
+                () -> stockFeignClient.readBatch(new com.simlect.api.dto.StockReadBatchDTO(ids)), "库存服务暂不可用");
+        if (result == null) throw new BusinessException("库存响应为空");
+        return result;
+    }
 
     @Resource
     private StockFeignClient stockFeignClient;

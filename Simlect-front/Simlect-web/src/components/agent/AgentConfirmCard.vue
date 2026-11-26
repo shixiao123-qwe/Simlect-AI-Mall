@@ -75,7 +75,7 @@
     <p v-if="card.riskTip" class="risk-tip">{{ card.riskTip }}</p>
 
     <!-- [zh] 开始标签 `<p>` -->
-    <p v-if="resultMessage" class="result-msg" :class="{ success: resultSuccess, error: !resultSuccess }">
+    <p v-if="resultMessage" class="result-msg" :class="{ success: resultSuccess, error: effectiveStatus === FAILED }">
       <!-- [zh] Mustache 插值表达式 -->
       {{ resultMessage }}
     <!-- [zh] 闭合标签 `</p>` -->
@@ -84,13 +84,15 @@
     <!-- [zh] 开始标签 `<footer>` -->
     <footer v-if="showActions" class="actions">
       <!-- [zh] 开始标签 `<button>` -->
-      <button type="button" class="btn-cancel" :disabled="loading" @click="onCancel">取消</button>
+      <button v-if="isPending" type="button" class="btn-cancel" :disabled="loading" @click="onCancel">取消</button>
       <!-- [zh] 开始标签 `<button>` -->
-      <button type="button" class="btn-confirm" :disabled="loading" @click="onConfirm">
+      <button v-if="isPending || retryAllowed" type="button" class="btn-confirm" :disabled="loading" @click="onConfirm">
         <!-- [zh] Mustache 插值表达式 -->
-        {{ loading ? '处理中…' : card.confirmText || '确认提交' }}
+        {{ loading ? '正在提交…' : isPending ? card.confirmText || '确认提交' : '使用原请求重试' }}
       <!-- [zh] 闭合标签 `</button>` -->
       </button>
+      <button v-if="isUncertain" type="button" class="btn-confirm" :disabled="loading" @click="checkResult">核实结果</button>
+      <span v-if="isUncertain">{{ effectiveStatus === EXECUTING ? '正在提交' : '正在核实结果' }}</span>
     <!-- [zh] 闭合标签 `</footer>` -->
     </footer>
     <!-- [zh] 开始标签 `<p>` -->
@@ -100,7 +102,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, onMounted, onBeforeUnmount } from 'vue';
 import { Ticket } from '@element-plus/icons-vue';
 import { agentApi } from '@/api/modules';
 import ProductImage from '@/components/common/ProductImage.vue';
@@ -150,6 +152,10 @@ const PENDING = 0;
 const CONFIRMED = 1;
 const CANCELLED = 2;
 const EXPIRED = 3;
+const EXECUTING = 4;
+const FAILED = 5;
+const UNKNOWN = 6;
+const retryAllowed = ref(false);
 
 const loading = ref(false);
 const localStatus = ref<number | null>(null);
@@ -164,7 +170,8 @@ const effectiveStatus = computed(() => {
 
 const isPending = computed(() => effectiveStatus.value === PENDING);
 
-const showActions = computed(() => isPending.value && !resultMessage.value);
+const isUncertain = computed(() => [EXECUTING, UNKNOWN].includes(effectiveStatus.value));
+const showActions = computed(() => isPending.value || isUncertain.value);
 
 const statusClass = computed(() => {
   if (effectiveStatus.value === CONFIRMED) return 'is-confirmed';
@@ -174,7 +181,10 @@ const statusClass = computed(() => {
 });
 
 const statusLabel = computed(() => {
-  if (effectiveStatus.value === CONFIRMED) return '已确认执行';
+  if (effectiveStatus.value === CONFIRMED) return props.card.actionType === 'AFTER_SALE_REQUEST' ? '已确认提交申请' : '已确认执行';
+  if (effectiveStatus.value === EXECUTING) return '正在提交';
+  if (effectiveStatus.value === UNKNOWN) return '正在核实结果';
+  if (effectiveStatus.value === FAILED) return '申请失败';
   if (effectiveStatus.value === CANCELLED) return '已取消';
   if (effectiveStatus.value === EXPIRED) return '已过期，请重新发起';
   return '';
@@ -255,32 +265,68 @@ const patchCard = (status: number) => {
   emit('updated', { ...props.card, status });
 };
 
+type ActionResponse = { success?: boolean; status?: number; resultMessage?: string; retryAllowed?: boolean };
+let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
+let checks = 0;
+let disposed = false;
+const applyResult = (data: ActionResponse) => {
+  resultSuccess.value = data.success === true;
+  resultMessage.value = data.resultMessage || (data.success ? '申请成功' : '正在核实结果');
+  retryAllowed.value = data.retryAllowed === true;
+  if (data.status != null) patchCard(data.status);
+  else if (data.success) patchCard(CONFIRMED);
+  // A rate-limit/transport response without a verified state never means FAILED.
+  else if (!isPending.value) patchCard(UNKNOWN);
+};
+const scheduleCheck = () => {
+  if (disposed || !isUncertain.value || checks >= 5) return;
+  clearTimeout(recoveryTimer);
+  recoveryTimer = setTimeout(() => { checks++; void checkResult(); }, 2500);
+};
+const checkResult = async () => {
+  if (!props.card.token || loading.value || disposed) return;
+  loading.value = true;
+  try {
+    applyResult(await agentApi.getActionResult(props.card.token));
+  } catch {
+    patchCard(UNKNOWN);
+    resultMessage.value = '正在核实结果，请稍后查询进度；请勿重复申请';
+  } finally {
+    loading.value = false;
+    scheduleCheck();
+  }
+};
 const onConfirm = async () => {
   if (!props.card.token || loading.value) return;
   loading.value = true;
+  patchCard(EXECUTING);
+  resultMessage.value = '正在提交';
   try {
-    const res = await agentApi.confirmAction(props.card.token);
-    const data = res as { success?: boolean; resultMessage?: string; actionType?: string };
-    resultSuccess.value = !!data?.success;
-    resultMessage.value = data?.resultMessage || (data?.success ? '操作成功' : '操作失败');
-    if (data?.success) {
-      patchCard(CONFIRMED);
-      toast.success(resultMessage.value);
-    } else {
-      toast.error(resultMessage.value);
-    }
+    applyResult(await agentApi.confirmAction(props.card.token));
+    if (resultSuccess.value) toast.success(resultMessage.value);
+    else if (effectiveStatus.value === FAILED) toast.error(resultMessage.value);
   } catch {
-    toast.error('确认失败，请稍后重试');
+    patchCard(UNKNOWN);
+    resultSuccess.value = false;
+    resultMessage.value = '正在核实结果，请稍后查询进度；请勿重复申请';
   } finally {
     loading.value = false;
+    checks = 0;
+    scheduleCheck();
   }
 };
+onMounted(() => { void checkResult(); });
+onBeforeUnmount(() => { disposed = true; clearTimeout(recoveryTimer); });
 
 const onCancel = async () => {
   if (!props.card.token || loading.value) return;
   loading.value = true;
   try {
-    await agentApi.cancelAction(props.card.token);
+    const result = await agentApi.cancelAction(props.card.token) as { success?: boolean; resultMessage?: string } | null;
+    if (result?.success === false) {
+      resultMessage.value = result.resultMessage || '取消未完成，请核实结果';
+      return;
+    }
     patchCard(CANCELLED);
     resultMessage.value = '已取消操作';
     resultSuccess.value = false;

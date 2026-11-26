@@ -138,4 +138,22 @@ class MqPublisherConfirmHelperTest {
         ConcurrentHashMap<?, ?> pending = (ConcurrentHashMap<?, ?>) ReflectionTestUtils.getField(helper, "pending");
         assertTrue(pending.isEmpty());
     }
+    @Test
+    void returnedOldAttemptCannotCompleteNewAttemptWithSameBusinessKey() throws Exception {
+        var pending = new ConcurrentHashMap<String, CompletableFuture<Boolean>>();
+        var oldAttempt = new CompletableFuture<Boolean>();
+        var newAttempt = new CompletableFuture<Boolean>();
+        pending.put("old-claim", oldAttempt); pending.put("new-claim", newAttempt);
+        ReflectionTestUtils.setField(helper, "pending", pending);
+        var props = new MessageProperties(); props.setMessageId("stable-business-key");
+        props.setHeader(MqPublisherConfirmHelper.HEADER_PUBLISH_ATTEMPT, "old-claim");
+        helper.returnedMessage(new ReturnedMessage(new Message(new byte[0], props), 312, "unroutable", EXCHANGE, ROUTING_KEY));
+        assertFalse(oldAttempt.get(1, TimeUnit.SECONDS));
+        assertFalse(newAttempt.isDone());
+        helper.confirm(new CorrelationData("old-claim"), true, "late ack");
+        assertFalse(newAttempt.isDone());
+        helper.confirm(new CorrelationData("new-claim"), true, null);
+        assertTrue(newAttempt.get(1, TimeUnit.SECONDS));
+    }
+
 }

@@ -34,7 +34,7 @@
             <!-- [zh] 开始标签 `<h3>` -->
             <h3 class="editor-title">编辑精选</h3>
             <!-- [zh] 开始标签 `<p>` -->
-            <p class="editor-sub">买手团队严选，品质之选</p>
+            <p class="editor-sub">从当前商品目录中发现好物</p>
           <!-- [zh] 闭合标签 `</div>` -->
           </div>
           <!-- [zh] 开始标签 `<button>` -->
@@ -116,7 +116,7 @@
           <p v-else-if="feedLoadError" class="feed-error">
             <button type="button" class="feed-retry" @click="retryFeed">加载失败，点击重试</button>
           </p>
-          <span v-else-if="feedFinished && displayProducts.length >= MAX_PRODUCTS" class="feed-tip">已展示全部推荐商品</span>
+          <span v-else-if="feedFinished && displayProducts.length" class="feed-tip">已展示当前商品</span>
           <span v-else-if="feedFinished && displayProducts.length" class="feed-tip">没有更多了</span>
         </div>
       </section>
@@ -125,6 +125,7 @@
 </template>
 
 <script setup lang="ts">
+import { uniqueProducts } from '@/utils/shoppingPresentation';
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import {
@@ -206,19 +207,7 @@ const formatPrice = (price: any): string => {
   return n.toFixed(2);
 };
 
-const displayProducts = computed(() => {
-  if (products.value.length === 0) return [];
-
-  const result: { product: any; displayIndex: number }[] = [];
-  const sourceLength = products.value.length;
-
-  for (let i = 0; i < MAX_PRODUCTS; i++) {
-    const sourceIndex = i % sourceLength;
-    result.push({ product: products.value[sourceIndex], displayIndex: i });
-  }
-
-  return result;
-});
+const displayProducts = computed(() => uniqueProducts(products.value, MAX_PRODUCTS).map((product, displayIndex) => ({ product, displayIndex })));
 
 const loadFeed = async (reset = false) => {
   if (feedLoading.value) return;
@@ -227,21 +216,22 @@ const loadFeed = async (reset = false) => {
     feedPageNo.value = 0;
     feedPageTotal.value = 1;
     feedFinished.value = false;
+    feedLoadError.value = false;
     products.value = [];
   }
 
-  if (feedFinished.value) return;
+  if (feedFinished.value || feedLoadError.value) return;
 
   feedLoading.value = true;
   feedLoadError.value = false;
   try {
     const next = feedPageNo.value + 1;
-    const page = await productApi.loadProduct({ pageNo: next });
+    const page = await productApi.loadProduct({ pageNo: next, includeRecommended: true });
     const chunk = filterOnSaleProducts(page?.list);
 
     if (chunk.length > 0) {
       const existingIds = new Set(products.value.map(p => p.productId));
-      const filtered = chunk.filter(p => !existingIds.has(p.productId));
+      const filtered = chunk.filter(p => { if (!p.productId || existingIds.has(p.productId)) return false; existingIds.add(p.productId); return true; });
       products.value = products.value.concat(filtered);
     }
 
@@ -262,7 +252,8 @@ const loadFeed = async (reset = false) => {
 };
 
 const retryFeed = () => {
-  void loadFeed(products.value.length === 0);
+  feedLoadError.value = false;
+  return loadFeed(products.value.length === 0);
 };
 
 const resetHomeScroll = () => {
@@ -279,7 +270,7 @@ const load = async (opts?: { prefetch?: boolean; fromPullRefresh?: boolean }) =>
     await loadFeed(true);
 
     if (opts?.prefetch) {
-      while (!feedFinished.value && products.value.length < MAX_PRODUCTS) {
+      while (!feedFinished.value && !feedLoadError.value && !feedLoading.value && products.value.length < MAX_PRODUCTS) {
         await loadFeed();
       }
     }
@@ -318,7 +309,7 @@ onMounted(async () => {
     loading.value = false;
     if (shouldPrefetch && !bootstrap.feedFinished) {
       void (async () => {
-        while (!feedFinished.value && products.value.length < MAX_PRODUCTS) {
+        while (!feedFinished.value && !feedLoadError.value && !feedLoading.value && products.value.length < MAX_PRODUCTS) {
           await loadFeed();
         }
       })();

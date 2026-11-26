@@ -11,6 +11,10 @@
 
 # 只读工具白名单，frozenset 不可变，类似 Collections.unmodifiableSet
 READ_TOOLS = frozenset({
+    "QUERY_AFTER_SALE_REQUESTS",
+    "GET_ORDER_DETAIL", "QUERY_AFTER_SALE_POLICY", "CHECK_AFTER_SALE_ELIGIBILITY",
+    "RECOMMEND_PRODUCTS",
+    "COMPARE_PRODUCTS",
     "SEARCH_PRODUCTS",  # 搜索商品
     "QUERY_ORDERS",  # 查询订单
     "GET_PRODUCT_DETAIL",  # 商品详情
@@ -21,6 +25,7 @@ READ_TOOLS = frozenset({
 
 # 写操作「提案」工具：生成确认卡片，不直接改库
 WRITE_TOOLS = frozenset({
+    "CREATE_AFTER_SALE_REQUEST",
     "PROPOSE_REFUND",  # 提案退款
     "PROPOSE_CONFIRM_RECEIPT",  # 提案确认收货
     "PROPOSE_PRODUCT_REVIEW",  # 提案商品评价

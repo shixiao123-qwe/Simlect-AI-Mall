@@ -64,7 +64,7 @@
           <!-- [zh] 开始标签 `<div>` -->
           <div class="result-icon" aria-hidden="true">✓</div>
           <!-- [zh] 开始标签 `<h2>` -->
-          <h2>支付成功</h2>
+          <h2>{{ demoPaid ? '模拟付款成功（未扣款）' : '支付成功' }}</h2>
           <!-- [zh] 开始标签 `<p>` -->
           <p>订单已支付，可在「我的订单」查看详情与物流信息。</p>
           <!-- [zh] 开始标签 `<div>` -->
@@ -112,6 +112,12 @@
         </div>
 
         <!-- [zh] 开始标签 `<div>` -->
+        <div v-else-if="localDemo" class="pay-result result-card pending">
+          <h2>本地演示订单已创建</h2>
+          <p>当前未接入支付宝。点击模拟付款后由服务器更新演示订单状态，不会发生真实扣款。</p>
+          <el-button type="primary" :loading="demoPayLoading" @click="confirmDemoPayment">模拟付款（不扣款）</el-button>
+          <el-button @click="goOrders">查看我的订单</el-button>
+        </div>
         <div v-else-if="loadError" class="result-card error">
           <!-- [zh] 开始标签 `<h2>` -->
           <h2>支付发起失败</h2>
@@ -145,7 +151,7 @@
       </section>
 
       <!-- [zh] 开始标签 `<aside>` -->
-      <aside class="pc-payment-aside">
+      <aside v-if="!localDemo && !demoPaid" class="pc-payment-aside">
         <!-- [zh] 开始标签 `<div>` -->
         <div class="aside-card">
           <!-- [zh] 开始标签 `<h2>` -->
@@ -189,6 +195,10 @@ const {
   payAmount,
   payLaunched,
   paySuccess,
+  localDemo,
+  demoPayLoading,
+  demoPaid,
+  confirmDemoPayment,
   launching,
   reopening,
   checking,

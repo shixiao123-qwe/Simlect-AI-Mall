@@ -12,6 +12,7 @@ from app.memory.models import SessionMemory
 from app.memory.session_memory_service import session_memory_service
 from app.memory.token_estimator import estimate_text_tokens
 from app.services.llm_factory import create_memory_llm
+from app.utils.llm_content import llm_text
 from app.services.message_service import agent_message_service
 from app.services.prompt_service import load_compress_prompt
 from app.services.redis_service import redis_service
@@ -124,7 +125,7 @@ class CompressService:
             ]
         )
 
-        raw = response.content if isinstance(response.content, str) else str(response.content or "")
+        raw = llm_text(response.content)
         raw = raw.strip()
 
         if raw.startswith("```"):

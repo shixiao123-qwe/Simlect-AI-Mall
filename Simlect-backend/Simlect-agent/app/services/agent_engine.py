@@ -19,6 +19,8 @@ agent_service._run_agent → agent_engine.assistant_answer → run_agent_graph �
 ================================================================================
 """
 
+import asyncio
+from app.services.redis_service import redis_service
 from app.graph.runner import run_agent_graph  # LangGraph 图执行入口（节点编排、工具调用等）
 
 
@@ -40,7 +42,24 @@ class AgentEngine:
         无返回值；结果通过 stream_service 推送，并通过 message_service 落库。
         """
 
-        await run_agent_graph(agent_msg)  # 委托给 LangGraph runner，跑完整个状态图
+        user_id=agent_msg["userId"]
+        message_id=int(agent_msg["messageId"])
+        client=redis_service.client
+        # Reject concurrent turns instead of letting whole-session snapshots overwrite each other.
+        lock=client.lock(f"agent:session:turn-lock:{user_id}",timeout=180,blocking=False)
+        if not await lock.acquire(blocking=False):
+            raise ValueError("当前会话正在处理，请等待本轮完成后再发送")
+        try:
+            key=f"agent:session:last-message:{user_id}"
+            previous=await client.get(key)
+            if previous is not None and message_id<int(previous):
+                raise ValueError("旧会话请求已失效，请刷新后重试")
+            await client.set(key,str(message_id),ex=7*24*3600)
+            async with asyncio.timeout(150):
+                await run_agent_graph(agent_msg)
+        finally:
+            # Redis lock release verifies owner; never DEL another worker's lease.
+            await lock.release()
 
 
 agent_engine = AgentEngine()  # 模块级单例，供 agent_service 等 import

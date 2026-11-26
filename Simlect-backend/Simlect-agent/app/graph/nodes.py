@@ -615,6 +615,28 @@ async def agent_loop_node(state: AgentGraphState) -> dict:
     messages = list(state.get("llm_messages") or [])  # 拷贝一份消息列表，避免原地修改 state
     turn_chunks: list[str] = []  # 本轮流式生成的文本碎片（最终 merge 进 state.chunks）
 
+    if state.get("react_round", 0) == 0 and not state.get("search_fallback_done"):
+        from app.services.after_sale_turn import after_sale_turn
+        after_sale = await after_sale_turn(state)
+        if after_sale is not None:
+            if await rt.is_cancelled(user_id,message_id):
+                return {"cancelled":True,"finished":True,"route":"end"}
+            return {"route":"finalize","chunks":[after_sale.content],"after_sale_handled":True,
+                    "tools_called":state.get("after_sale_tools",[]),"assistant_cards":after_sale.assistant_cards,
+                    "biz_type":after_sale.biz_type,"biz_data":after_sale.biz_data,
+                    "tool_biz":after_sale.to_biz_dict(),"search_fallback_done":True,"pending_tool_calls":[]}
+        from app.services.shopping_turn import shopping_turn
+        shopping = await shopping_turn(state)
+        if shopping is not None:
+            if await rt.is_cancelled(user_id, message_id):
+                return {"cancelled":True,"finished":True,"route":"end"}
+            return {"route":"finalize", "chunks":[shopping.content], "shopping_handled":True,
+                    "tools_called":[state["shopping_tool"]] if state.get("shopping_tool") else [],
+                    "assistant_cards":shopping.assistant_cards,"biz_type":shopping.biz_type,
+                    "biz_data":shopping.biz_data,"tool_biz":shopping.to_biz_dict(),
+                    "search_fallback_done":True,"pending_tool_calls":[],
+                    "shopping_requirement":state.get("shopping_requirement") or {}}
+
     settings = get_settings()  # 读取配置（含 graph_max_react_rounds）
     if state.get("react_round", 0) >= settings.graph_max_react_rounds:  # 超过最大 ReAct 轮 → 强制收束
         return {"route": "finalize"}
@@ -1033,6 +1055,8 @@ async def finalize_node(state: AgentGraphState) -> dict:
             user_text=state.get("user_text"),
             consult_card=state.get("card"),
             message_card=state.get("message_card"),
+            shopping_handled=bool(state.get("shopping_handled")),
+            after_sale_handled=bool(state.get("after_sale_handled")),
         )
     except Exception as e:  # finalize 失败不应阻断 cleanup
         logger.exception("graph_finalize_failed", error=str(e))

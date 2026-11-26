@@ -1,11 +1,1 @@
-
-export const DEFAULT_HOT_SEARCH_WORDS = [
-  '牛肉干',
-  '零食',
-  '女装',
-  '手机',
-  '运动鞋',
-  '美妆',
-  '家居',
-  '数码'
-];
+export const DEFAULT_HOT_SEARCH_WORDS = ['蓝牙耳机', '厨具', '办公用品', '家居用品', '灯具', '手机壳', '运动用品'];

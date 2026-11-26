@@ -127,10 +127,15 @@ public class OrderStateMachine {
         register(transitions, OrderStatusEnum.WAIT_PAYMENT, OrderStateEvent.PAYMENT_TIMEOUT, OrderStatusEnum.CLOSED);
         register(transitions, OrderStatusEnum.PAID, OrderStateEvent.SHIP, OrderStatusEnum.SHIPPED);
         for (OrderStatusEnum refundable : Set.of(
-                OrderStatusEnum.PAID, OrderStatusEnum.SHIPPED, OrderStatusEnum.PARTIALLY_REFUNDED)) {
+                OrderStatusEnum.PAID, OrderStatusEnum.PARTIALLY_REFUNDED)) {
             register(transitions, refundable, OrderStateEvent.PARTIAL_REFUND,
                     OrderStatusEnum.PARTIALLY_REFUNDED);
             register(transitions, refundable, OrderStateEvent.FULL_REFUND, OrderStatusEnum.REFUNDED);
+        }
+        for (OrderStatusEnum reviewed : Set.of(OrderStatusEnum.PAID, OrderStatusEnum.SHIPPED,
+                OrderStatusEnum.COMPLETED, OrderStatusEnum.PARTIALLY_REFUNDED)) {
+            register(transitions, reviewed, OrderStateEvent.AFTER_SALE_FULL_REFUND, OrderStatusEnum.REFUNDED);
+            register(transitions, reviewed, OrderStateEvent.AFTER_SALE_PARTIAL_REFUND, OrderStatusEnum.PARTIALLY_REFUNDED);
         }
         for (OrderStatusEnum receivable : Set.of(
                 OrderStatusEnum.SHIPPED, OrderStatusEnum.PARTIALLY_REFUNDED)) {

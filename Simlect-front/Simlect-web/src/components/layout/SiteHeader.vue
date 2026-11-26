@@ -40,8 +40,8 @@
       <div class="search-row-inner">
         <RouterLink class="brand" to="/">
           <BrandMark class="brand-icon" />
-          <span class="brand-text">简选</span>
-          <span class="brand-en">Simlect</span>
+          <span class="brand-text">选物</span>
+          <span class="brand-en">AI MALL</span>
         </RouterLink>
 
         <div class="search-block">
@@ -65,7 +65,7 @@
               v-model="keyword"
               class="search-input"
               type="search"
-              placeholder="搜索简选"
+              placeholder="搜索商品、品牌或品类"
               @focus="openRecentPanel"
               @blur="onSearchBlur"
               @keyup.enter="goSearch"
@@ -291,10 +291,12 @@ const logout = async () => {
 onMounted(async () => {
   const cats = await productApi.loadCategory();
   categoryList.value = flattenCategoryOptions(normalizeCategoryTree(cats || []), 'child');
+  const categoryWords = categoryList.value.map((c: any) => c.categoryName).filter(Boolean);
+  if (categoryWords.length) hotWords.value = [...new Set(categoryWords)].slice(0, 8) as string[];
   if (authStore.isLoggedIn) cartStore.fetchCartCount();
   try {
     const hot = await searchApi.loadHotKeywords();
-    if (Array.isArray(hot) && hot.length) hotWords.value = hot.slice(0, 8);
+    if (!categoryWords.length && Array.isArray(hot) && hot.length) hotWords.value = hot.slice(0, 8);
   } catch {
 
   }

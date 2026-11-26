@@ -11,11 +11,14 @@
       @click="onProductClick(item)"
     >
       <!-- [zh] 开始标签 `<ProductImage>` -->
-      <ProductImage :product="item" :width="52" :height="52" />
+      <ProductImage :product="item" :width="140" :height="110" fit="contain" />
       <!-- [zh] 开始标签 `<p>` -->
+      <span class="card-index">{{ index + 1 }} · {{ item.verified ? '已核验' : '商品' }}</span>
       <p class="name">{{ item.productName }}</p>
       <!-- [zh] 开始标签 `<p>` -->
-      <p class="price">¥{{ formatPrice(item.minPrice ?? item.price) }}</p>
+      <p class="price">¥{{ formatPrice(item.verified?.price ?? item.minPrice ?? item.price) }}</p>
+      <p v-if="item.verified" class="evidence">可售 {{ item.verified.stock }} 件 · {{ item.verified.reason }}</p>
+      <span class="detail-link">查看商品 →</span>
     <!-- [zh] 闭合标签 `</RouterLink>` -->
     </RouterLink>
     <!-- [zh] 开始标签 `<p>` -->
@@ -149,3 +152,5 @@ const formatPrice = (val: unknown) => Number(val ?? 0).toFixed(2);
 /* [zh] 样式规则 `}` */
 }
 </style>
+
+<style scoped>.product-link{padding:12px;background:#fff;border-radius:14px}.agent-products{max-height:420px}.card-index{font-size:10px;color:#6f856d}.evidence{font-size:11px;line-height:1.6;color:#758070;margin:0}.detail-link{font-size:11px;color:#426146;padding-top:6px}.product-link .name{font-size:13px;line-height:1.5}.product-link .price{color:#3a583f;font-size:18px}</style>

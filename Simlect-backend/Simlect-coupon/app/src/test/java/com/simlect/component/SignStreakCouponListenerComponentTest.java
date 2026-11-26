@@ -24,6 +24,27 @@ import static org.mockito.Mockito.when;
 @ExtendWith(MockitoExtension.class)
 class SignStreakCouponListenerComponentTest {
 
+    private boolean inboxDone;
+    @org.junit.jupiter.api.BeforeEach
+    void wireInboxRunnerMock() {
+        // This fixture models a committed Inbox outcome. Common and container tests verify real transactions.
+        org.mockito.Mockito.doAnswer(call -> {
+            String queue = call.getArgument(0);
+            Message message = call.getArgument(2);
+            Channel channel = call.getArgument(3);
+            Object payload = call.getArgument(4);
+            if (inboxDone) { channel.basicAck(message.getMessageProperties().getDeliveryTag(), false); return null; }
+            try {
+                call.<Runnable>getArgument(5).run();
+                channel.basicAck(message.getMessageProperties().getDeliveryTag(), false);
+            } catch (Exception failure) {
+                mqListenerHelper.nackWithRetryOrDlq(channel,message.getMessageProperties().getDeliveryTag(),message,queue,payload,failure);
+            }
+            return null;
+        }).when(mqListenerHelper).consumeInbox(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
+    }
+
     private static final long DELIVERY_TAG = 73L;
 
     @Mock
@@ -47,8 +68,7 @@ class SignStreakCouponListenerComponentTest {
     void handle_duplicateDelivery_acksWithoutGranting() throws Exception {
         Channel channel = mock(Channel.class);
         Message message = rabbitMessage();
-        when(mqListenerHelper.tryBeginConsume(
-                message, MqListenerHelper.CONSUME_IDEMPOTENCY_TTL_HIGH_SECONDS)).thenReturn(false);
+        inboxDone = true;
 
         listener.handle(payload(), channel, message);
 
@@ -61,13 +81,13 @@ class SignStreakCouponListenerComponentTest {
         Channel channel = mock(Channel.class);
         Message message = rabbitMessage();
         SignStreakCouponMessageDTO invalid = new SignStreakCouponMessageDTO("U1", "", 7);
-        when(mqListenerHelper.tryBeginConsume(
-                message, MqListenerHelper.CONSUME_IDEMPOTENCY_TTL_HIGH_SECONDS)).thenReturn(true);
+        inboxDone = false;
 
         listener.handle(invalid, channel, message);
 
-        verify(mqListenerHelper).clearConsumeRetry(RabbitMQConfig.SIGN_STREAK_COUPON_QUEUE, message);
-        verify(channel).basicAck(DELIVERY_TAG, false);
+        verify(mqListenerHelper).consumeInbox(eq(RabbitMQConfig.SIGN_STREAK_COUPON_QUEUE),org.mockito.ArgumentMatchers.anyString(),any(),any(),any(),any());
+        verify(channel, never()).basicAck(anyLong(),anyBoolean());
+        verify(mqListenerHelper).nackWithRetryOrDlq(any(),anyLong(),any(),any(),any(),any(Exception.class));
         verify(couponInternalService, never()).grantSignStreakCoupon(any());
     }
 
@@ -76,14 +96,13 @@ class SignStreakCouponListenerComponentTest {
         Channel channel = mock(Channel.class);
         Message message = rabbitMessage();
         SignStreakCouponMessageDTO payload = payload();
-        when(mqListenerHelper.tryBeginConsume(
-                message, MqListenerHelper.CONSUME_IDEMPOTENCY_TTL_HIGH_SECONDS)).thenReturn(true);
+        inboxDone = false;
         when(couponInternalService.grantSignStreakCoupon(payload))
                 .thenReturn(new CouponInternalService.StreakCouponGrantResult("GRANTED", "UC1", null));
 
         listener.handle(payload, channel, message);
 
-        verify(mqListenerHelper).clearConsumeRetry(RabbitMQConfig.SIGN_STREAK_COUPON_QUEUE, message);
+        verify(mqListenerHelper).consumeInbox(eq(RabbitMQConfig.SIGN_STREAK_COUPON_QUEUE),org.mockito.ArgumentMatchers.anyString(),any(),any(),any(),any());
         verify(channel).basicAck(DELIVERY_TAG, false);
     }
 
@@ -93,8 +112,7 @@ class SignStreakCouponListenerComponentTest {
         Message message = rabbitMessage();
         SignStreakCouponMessageDTO payload = payload();
         IllegalStateException failure = new IllegalStateException("db down");
-        when(mqListenerHelper.tryBeginConsume(
-                message, MqListenerHelper.CONSUME_IDEMPOTENCY_TTL_HIGH_SECONDS)).thenReturn(true);
+        inboxDone = false;
         when(couponInternalService.grantSignStreakCoupon(payload)).thenThrow(failure);
 
         listener.handle(payload, channel, message);

@@ -9,6 +9,7 @@
 """
 
 import re  # 正则清洗与模式匹配
+from app.harness.guardrails.tool_guard import WRITE_TOOLS
 
 from app.utils.biz_payload import strip_embedded_product_json  # 剥离内嵌商品 JSON
 
@@ -119,7 +120,7 @@ class OutputGuardrail:
         返回:
             清洗或替换后的文本
         """
-        propose_called = any(t.startswith("PROPOSE_") for t in tools_called)  # 是否发起过确认
+        propose_called = any(t in WRITE_TOOLS for t in tools_called)  # 是否发起过确认
         cleaned = strip_emojis(text)
         # 未调用 PROPOSE_* 时 strip 捏造的 act token
         if not propose_called:
@@ -131,7 +132,7 @@ class OutputGuardrail:
                     "退款请提供订单项ID，我再为您正式发起确认。"
                 )
         for pattern in FALSE_COMPLETION_PATTERNS:
-            if re.search(pattern, cleaned) and not propose_called:
+            if re.search(pattern, cleaned) and not any(t in WRITE_TOOLS and t.startswith("PROPOSE_") for t in tools_called):
                 return (
                     "系统尚未执行该操作，也未生成确认卡片。"
                     "请重新说明订单号与操作需求。"

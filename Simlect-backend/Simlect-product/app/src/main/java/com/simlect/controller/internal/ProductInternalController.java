@@ -26,6 +26,12 @@ import java.util.List;
 @RestController
 @RequestMapping("/internal/product")
 public class ProductInternalController extends ABaseController {
+    @Resource private com.simlect.biz.AiProductFilterService aiProductFilterService;
+    @PostMapping("/ai/filter")
+    public ResponseVO<java.util.List<java.util.Map<String,Object>>> aiFilter(
+            @Valid @RequestBody com.simlect.entity.dto.AiProductFilterDTO dto) {
+        return getSuccessResponseVO(aiProductFilterService.filter(dto));
+    }
 
     @Resource
     private ProductInternalService productInternalService;

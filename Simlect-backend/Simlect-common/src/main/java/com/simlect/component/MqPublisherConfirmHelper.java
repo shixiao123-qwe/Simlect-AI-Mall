@@ -27,6 +27,8 @@ public class MqPublisherConfirmHelper implements RabbitTemplate.ConfirmCallback,
     @Value("#{${mq.publisher.confirm-timeout-by-exchange:{}}}")
     private Map<String, Long> confirmTimeoutByExchange = Collections.emptyMap();
 
+    public static final String HEADER_PUBLISH_ATTEMPT = "x-publisher-attempt-id";
+
     private final ConcurrentHashMap<String, CompletableFuture<Boolean>> pending = new ConcurrentHashMap<>();
 
     @Resource
@@ -75,7 +77,8 @@ public class MqPublisherConfirmHelper implements RabbitTemplate.ConfirmCallback,
 
     @Override
     public void returnedMessage(org.springframework.amqp.core.ReturnedMessage returned) {
-        String messageId = returned.getMessage().getMessageProperties().getMessageId();
+        String attempt = returned.getMessage().getMessageProperties().getHeader(HEADER_PUBLISH_ATTEMPT);
+        String messageId = attempt == null ? returned.getMessage().getMessageProperties().getMessageId() : attempt;
         if (messageId == null) {
             return;
         }
@@ -93,17 +96,21 @@ public class MqPublisherConfirmHelper implements RabbitTemplate.ConfirmCallback,
         CompletableFuture<Boolean> future = new CompletableFuture<>();
         pending.put(correlationId, future);
         try {
-            rabbitTemplate.convertAndSend(exchange, routingKey, body, processor, correlationData);
+            rabbitTemplate.convertAndSend(exchange, routingKey, body, message -> {
+                var processed = processor == null ? message : processor.postProcessMessage(message);
+                processed.getMessageProperties().setHeader(HEADER_PUBLISH_ATTEMPT, correlationId);
+                return processed;
+            }, correlationData);
             Boolean ack = future.get(timeoutMs, TimeUnit.MILLISECONDS);
             if (!Boolean.TRUE.equals(ack)) {
                 throw new org.springframework.amqp.AmqpException("Broker 未确认消息持久化, key=" + correlationId);
             }
         } catch (TimeoutException e) {
-            pending.remove(correlationId);
+            pending.remove(correlationId, future);
             throw new org.springframework.amqp.AmqpException(
                     "Publisher confirm 超时, key=" + correlationId + ", timeoutMs=" + timeoutMs, e);
         } finally {
-            pending.remove(correlationId);
+            pending.remove(correlationId, future);
         }
     }
 }

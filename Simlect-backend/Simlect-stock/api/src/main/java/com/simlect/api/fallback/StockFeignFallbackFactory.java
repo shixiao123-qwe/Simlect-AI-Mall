@@ -56,6 +56,10 @@ public class StockFeignFallbackFactory implements FallbackFactory<StockFeignClie
         log.warn("Stock Feign fallback: {}", cause == null ? "unknown" : cause.toString());
         return new StockFeignClient() {
                 @Override
+                public ResponseVO<java.util.List<SkuStockDTO>> readBatch(com.simlect.api.dto.StockReadBatchDTO dto) {
+                    return FeignFallbackResponses.unavailable("库存服务");
+                }
+                @Override
                 public ResponseVO<SkuStockDTO> getStock(SkuStockQueryDTO dto) {
                     return FeignFallbackResponses.unavailable("库存服务");
                 }

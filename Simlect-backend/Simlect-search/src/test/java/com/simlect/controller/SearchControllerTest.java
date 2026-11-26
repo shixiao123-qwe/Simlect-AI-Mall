@@ -3,6 +3,7 @@ package com.simlect.controller;
 import com.simlect.biz.SearchKeywordService;
 import com.simlect.biz.SearchRecommendService;
 import com.simlect.component.RedisComponent;
+import com.simlect.component.EsSearchComponent;
 import com.simlect.entity.dto.TokenUserInfoDTO;
 import com.simlect.utils.AuthCookieHelper;
 import org.junit.jupiter.api.BeforeEach;
@@ -35,6 +36,8 @@ class SearchControllerTest {
     private SearchKeywordService searchKeywordService;
     @Mock
     private SearchRecommendService searchRecommendService;
+    @Mock
+    private EsSearchComponent esSearchComponent;
 
     @InjectMocks
     private SearchController searchController;
@@ -60,6 +63,31 @@ class SearchControllerTest {
         mockMvc.perform(get("/search/loadHotKeywords"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[0]").value("牛肉干"));
+    }
+
+    @Test
+    void searchProducts_passesFiltersToExistingSearch() throws Exception {
+        mockMvc.perform(post("/search/products").param("keyWords", " 耳机 ")
+                        .param("priceTo", "300").param("sortField", "price")
+                        .param("sortType", "asc").param("pageNo", "2"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("success"));
+        verify(esSearchComponent).searchProducts("耳机", null, new java.math.BigDecimal("300"), "asc", "price", 2);
+    }
+
+    @Test
+    void searchProducts_rejectsInvalidParametersBeforeCallingEs() throws Exception {
+        for (String[] pair : List.of(new String[]{"keyWords", " "}, new String[]{"priceFrom", "-1"},
+                new String[]{"pageNo", "0"}, new String[]{"pageNo", "667"},
+                new String[]{"sortField", "arbitraryField"}, new String[]{"sortType", "random"})) {
+            var request = post("/search/products");
+            if (!pair[0].equals("keyWords")) request.param("keyWords", "耳机");
+            mockMvc.perform(request.param(pair[0], pair[1]))
+                    .andExpect(jsonPath("$.status").value("error"));
+        }
+        mockMvc.perform(post("/search/products").param("keyWords", "耳机")
+                        .param("priceFrom", "300").param("priceTo", "100"))
+                .andExpect(jsonPath("$.status").value("error"));
+        verifyNoInteractions(esSearchComponent);
     }
 
     @Test

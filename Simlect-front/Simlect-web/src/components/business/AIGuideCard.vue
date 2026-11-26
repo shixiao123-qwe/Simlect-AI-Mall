@@ -1,360 +1,44 @@
-<!-- [zh] SFC 区块开始（单文件组件 template/script/style 三段） -->
 <template>
-  <!-- [zh] 开始标签 `<div>` -->
-  <div class="ai-guide-card" @click="goAgent">
-    <!-- [zh] 开始标签 `<div>` -->
-    <div class="ai-guide-left">
-      <!-- [zh] 开始标签 `<div>` -->
-      <div class="ai-avatar-pulse">
-        <!-- [zh] 开始标签 `<el-icon>` -->
-        <el-icon :size="18"><ChatDotRound /></el-icon>
-      <!-- [zh] 闭合标签 `</div>` -->
+  <section class="shopping-studio" aria-labelledby="studio-title">
+    <div class="studio-heading">
+      <div class="studio-copy">
+        <span class="studio-kicker"><span class="kicker-dot" /> AI 帮你选 · 按需发现好物</span>
+        <h1 id="studio-title">选到喜欢的，<span>也选得明白。</span></h1>
+        <p>告诉我预算和需求，一起比较价格、参数与库存。</p>
+        <div class="studio-links"><RouterLink to="/search">逛逛全部商品 <span>↗</span></RouterLink><RouterLink to="/after-sale-requests">我的售后进度 →</RouterLink></div>
       </div>
-      <!-- [zh] 开始标签 `<div>` -->
-      <div class="ai-text">
-        <!-- [zh] 开始标签 `<p>` -->
-        <p class="ai-title">AI 帮你选</p>
-        <!-- [zh] 开始标签 `<p>` -->
-        <p class="ai-sub">不知道买什么？告诉我你的需求</p>
-      <!-- [zh] 闭合标签 `</div>` -->
+      <div v-if="featuredProducts.length" class="studio-products" aria-label="发现商品">
+        <RouterLink v-for="product in featuredProducts.slice(0,3)" :key="product.productId" :to="`/product/${product.productId}`" class="studio-product">
+          <ProductImage :product="product" fit="contain" width="100%" height="100%" />
+          <span>{{ product.productName }}</span>
+        </RouterLink>
       </div>
-    <!-- [zh] 闭合标签 `</div>` -->
+      <div v-else class="studio-aside"><span>YOUR SHOPPING COMPANION</span><strong>少一点纠结<br>多一点合适</strong></div>
     </div>
-    <!-- [zh] 开始标签 `<div>` -->
-    <div class="ai-prompts">
-      <!-- [zh] 开始标签 `<button>` -->
-      <button
-        v-for="(prompt, i) in samplePrompts"
-        :key="i"
-        type="button"
-        class="ai-prompt-chip"
-        @click.stop="quickAsk(prompt)"
-      >
-        <!-- [zh] Mustache 插值表达式 -->
-        {{ prompt }}
-      <!-- [zh] 闭合标签 `</button>` -->
-      </button>
-    <!-- [zh] 闭合标签 `</div>` -->
-    </div>
-    <!-- [zh] 开始标签 `<div>` -->
-    <div class="ai-arrow">
-      <!-- [zh] 开始标签 `<el-icon>` -->
-      <el-icon :size="14"><ArrowRight /></el-icon>
-    <!-- [zh] 闭合标签 `</div>` -->
-    </div>
-  <!-- [zh] 闭合标签 `</div>` -->
-  </div>
+    <form class="studio-form" @submit.prevent="ask">
+      <div class="form-title"><span class="ai-badge">AI</span><span>帮我选一选<small>从预算开始，找到适合你的商品</small></span></div>
+      <label><span>想买什么</span><input v-model.trim="category" maxlength="80" placeholder="例如：厨具、蓝牙耳机" required></label>
+      <label class="budget-label"><span>预算上限</span><span class="budget-field"><span>¥</span><input v-model="budget" type="number" min="1" max="999999" step="1" required></span></label>
+      <button class="studio-submit" type="submit">开始 AI 选购 <span>↗</span></button>
+    </form>
+    <div class="studio-bottom"><div class="quick-categories"><span>试试：</span><button v-for="word in ['厨具','办公用品','蓝牙耳机']" :key="word" type="button" @click="category=word">{{ word }} ↗</button></div><span>需求先填入聊天框，确认后发送</span></div>
+  </section>
 </template>
-
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
-import { ArrowRight, ChatDotRound } from '@element-plus/icons-vue';
-import { useOpenAgent } from '@/composables/useOpenAgent';
-
-const PROMPT_POOL = [
-  '通勤路上适合用什么',
-  '厨房好物推荐',
-  '宿舍生活必备品',
-  '运动健身装备推荐',
-  '百元以内的实用好物',
-  '适合送给妈妈的礼物',
-  '居家收纳好物',
-  '学生党平价好物',
-  '数码周边推荐',
-  '秋冬保暖好物',
-  '宠物用品推荐',
-  '旅行出行必备',
-  '适合送给男朋友的礼物',
-  '办公桌改造好物',
-  '卧室好物推荐',
-  '夏天清凉好物',
-  '100元内的创意礼物',
-  '健康养生好物',
-  '宝宝用品推荐',
-  '车载好物推荐'
-];
-
-function pickRandom<T>(arr: T[], count: number): T[] {
-  const shuffled = [...arr];
-  for (let i = shuffled.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-  }
-  return shuffled.slice(0, count);
-}
-
-const samplePrompts = ref<string[]>([]);
-
-onMounted(() => {
-  samplePrompts.value = pickRandom(PROMPT_POOL, 3);
-});
-
-const { openAgent } = useOpenAgent();
-
-const goAgent = () => {
-  openAgent();
-};
-
-const quickAsk = (prompt: string) => {
-  openAgent({ presetMessage: prompt });
-};
+import {ref} from 'vue';
+import {RouterLink} from 'vue-router';
+import ProductImage from '@/components/common/ProductImage.vue';
+import {useOpenAgent} from '@/composables/useOpenAgent';
+withDefaults(defineProps<{featuredProducts?: Record<string, any>[]}>(),{featuredProducts:()=>[]});
+const category=ref('厨具'),budget=ref('300');
+const {openAgent}=useOpenAgent();
+function ask(){const amount=Number(budget.value);if(!category.value || !Number.isFinite(amount) || amount<1 || amount>999999)return;openAgent({presetMessage:`重新选购：推荐${amount}元以内的${category.value}`});}
 </script>
-
-/* [zh] 样式声明 */
-<style scoped lang="scss">
-/* [zh] 样式规则 `@use '@/styles/variables' as *;` */
-@use '@/styles/variables' as *;
-
-/* [zh] 样式规则 `.ai-guide-card {` */
-.ai-guide-card {
-  /* [zh] 样式规则 `margin: 12px $app-page-gutter 0;` */
-  margin: 12px $app-page-gutter 0;
-  /* [zh] 样式规则 `padding: 12px;` */
-  padding: 12px;
-  /* [zh] 样式规则 `display: flex;` */
-  display: flex;
-  /* [zh] 样式规则 `flex-wrap: wrap;` */
-  flex-wrap: wrap;
-  /* [zh] 样式规则 `align-items: center;` */
-  align-items: center;
-  /* [zh] 样式规则 `gap: 10px;` */
-  gap: 10px;
-  /* [zh] 样式规则 `background: linear-gradient(135deg, #fff` */
-  background: linear-gradient(135deg, #ffffff 0%, #fefaf3 100%);
-  /* [zh] 样式规则 `border: 1px solid rgba(212, 162, 78, 0.1` */
-  border: 1px solid rgba(212, 162, 78, 0.18);
-  /* [zh] 样式规则 `border-radius: $radius-card;` */
-  border-radius: $radius-card;
-  /* [zh] 样式规则 `cursor: pointer;` */
-  cursor: pointer;
-  /* [zh] 样式规则 `position: relative;` */
-  position: relative;
-  /* [zh] 样式规则 `overflow: hidden;` */
-  overflow: hidden;
-  /* [zh] 样式规则 `transition: transform 0.2s ease, box-sha` */
-  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
-
-  /* [zh] 样式规则 `&:hover {` */
-  &:hover {
-    /* [zh] 样式规则 `border-color: rgba(212, 162, 78, 0.35);` */
-    border-color: rgba(212, 162, 78, 0.35);
-    /* [zh] 样式规则 `box-shadow: $shadow-card;` */
-    box-shadow: $shadow-card;
-  /* [zh] 样式规则 `}` */
-  }
-
-  /* [zh] 样式规则 `&:active {` */
-  &:active {
-    /* [zh] 样式规则 `transform: scale(0.985);` */
-    transform: scale(0.985);
-  /* [zh] 样式规则 `}` */
-  }
-/* [zh] 样式规则 `}` */
-}
-
-/* [zh] 样式规则 `.ai-guide-left {` */
-.ai-guide-left {
-  /* [zh] 样式规则 `display: flex;` */
-  display: flex;
-  /* [zh] 样式规则 `align-items: center;` */
-  align-items: center;
-  /* [zh] 样式规则 `gap: 10px;` */
-  gap: 10px;
-  /* [zh] 样式规则 `z-index: 1;` */
-  z-index: 1;
-  /* [zh] 样式规则 `flex-shrink: 0;` */
-  flex-shrink: 0;
-  /* [zh] 样式规则 `flex: 1;` */
-  flex: 1;
-  /* [zh] 样式规则 `min-width: 0;` */
-  min-width: 0;
-/* [zh] 样式规则 `}` */
-}
-
-/* [zh] 样式规则 `.ai-avatar-pulse {` */
-.ai-avatar-pulse {
-  /* [zh] 样式规则 `width: 40px;` */
-  width: 40px;
-  /* [zh] 样式规则 `height: 40px;` */
-  height: 40px;
-  /* [zh] 样式规则 `border-radius: 50%;` */
-  border-radius: 50%;
-  /* [zh] 样式规则 `background: $color-gold-soft;` */
-  background: $color-gold-soft;
-  /* [zh] 样式规则 `color: $color-gold;` */
-  color: $color-gold;
-  /* [zh] 样式规则 `display: grid;` */
-  display: grid;
-  /* [zh] 样式规则 `place-items: center;` */
-  place-items: center;
-  /* [zh] 样式规则 `box-shadow: 0 0 0 3px rgba(212, 162, 78,` */
-  box-shadow: 0 0 0 3px rgba(212, 162, 78, 0.1);
-  /* [zh] 样式规则 `animation: aiPulse 3s ease-in-out infini` */
-  animation: aiPulse 3s ease-in-out infinite;
-/* [zh] 样式规则 `}` */
-}
-
-/* [zh] 样式规则 `@keyframes aiPulse {` */
-@keyframes aiPulse {
-  /* [zh] 样式规则 `0%, 100% { box-shadow: 0 0 0 3px rgba(21` */
-  0%, 100% { box-shadow: 0 0 0 3px rgba(212, 162, 78, 0.1); }
-  /* [zh] 样式规则 `50% { box-shadow: 0 0 0 6px rgba(212, 16` */
-  50% { box-shadow: 0 0 0 6px rgba(212, 162, 78, 0.06); }
-/* [zh] 样式规则 `}` */
-}
-
-/* [zh] 样式规则 `.ai-text {` */
-.ai-text {
-  /* [zh] 样式规则 `.ai-title {` */
-  .ai-title {
-    /* [zh] 样式规则 `font-size: 15px;` */
-    font-size: 15px;
-    /* [zh] 样式规则 `font-weight: 600;` */
-    font-weight: 600;
-    /* [zh] 样式规则 `color: $color-text-title;` */
-    color: $color-text-title;
-    /* [zh] 样式规则 `margin: 0;` */
-    margin: 0;
-    /* [zh] 样式规则 `line-height: 1.3;` */
-    line-height: 1.3;
-  /* [zh] 样式规则 `}` */
-  }
-  /* [zh] 样式规则 `.ai-sub {` */
-  .ai-sub {
-    /* [zh] 样式规则 `font-size: 12px;` */
-    font-size: 12px;
-    /* [zh] 样式规则 `color: $color-text-muted;` */
-    color: $color-text-muted;
-    /* [zh] 样式规则 `margin: 2px 0 0;` */
-    margin: 2px 0 0;
-    /* [zh] 样式规则 `line-height: 1.2;` */
-    line-height: 1.2;
-  /* [zh] 样式规则 `}` */
-  }
-/* [zh] 样式规则 `}` */
-}
-
-/* [zh] 样式规则 `.ai-prompts {` */
-.ai-prompts {
-  /* [zh] 样式规则 `display: flex;` */
-  display: flex;
-  /* [zh] 样式规则 `gap: 6px;` */
-  gap: 6px;
-  /* [zh] 样式规则 `z-index: 1;` */
-  z-index: 1;
-  /* [zh] 样式规则 `flex-wrap: wrap;` */
-  flex-wrap: wrap;
-  /* [zh] 样式规则 `flex: 1;` */
-  flex: 1;
-  /* [zh] 样式规则 `min-width: 0;` */
-  min-width: 0;
-/* [zh] 样式规则 `}` */
-}
-
-/* [zh] 样式规则 `.ai-prompt-chip {` */
-.ai-prompt-chip {
-  /* [zh] 样式规则 `padding: 4px 10px;` */
-  padding: 4px 10px;
-  /* [zh] 样式规则 `border: 1px solid rgba(212, 162, 78, 0.2` */
-  border: 1px solid rgba(212, 162, 78, 0.25);
-  /* [zh] 样式规则 `border-radius: $radius-pill;` */
-  border-radius: $radius-pill;
-  /* [zh] 样式规则 `background: rgba(212, 162, 78, 0.06);` */
-  background: rgba(212, 162, 78, 0.06);
-  /* [zh] 样式规则 `color: #8b7355;` */
-  color: #8b7355;
-  /* [zh] 样式规则 `font-size: 11px;` */
-  font-size: 11px;
-  /* [zh] 样式规则 `cursor: pointer;` */
-  cursor: pointer;
-  /* [zh] 样式规则 `white-space: nowrap;` */
-  white-space: nowrap;
-  /* [zh] 样式规则 `transition: background 0.2s, border-colo` */
-  transition: background 0.2s, border-color 0.2s, color 0.2s;
-
-  /* [zh] 样式规则 `&:hover {` */
-  &:hover {
-    /* [zh] 样式规则 `background: rgba(212, 162, 78, 0.14);` */
-    background: rgba(212, 162, 78, 0.14);
-    /* [zh] 样式规则 `border-color: rgba(212, 162, 78, 0.4);` */
-    border-color: rgba(212, 162, 78, 0.4);
-    /* [zh] 样式规则 `color: $color-gold;` */
-    color: $color-gold;
-  /* [zh] 样式规则 `}` */
-  }
-
-  /* [zh] 样式规则 `&:active {` */
-  &:active {
-    /* [zh] 样式规则 `background: $color-gold-soft;` */
-    background: $color-gold-soft;
-    /* [zh] 样式规则 `border-color: $color-gold;` */
-    border-color: $color-gold;
-    /* [zh] 样式规则 `color: $color-gold;` */
-    color: $color-gold;
-  /* [zh] 样式规则 `}` */
-  }
-/* [zh] 样式规则 `}` */
-}
-
-/* [zh] 样式规则 `.ai-arrow {` */
-.ai-arrow {
-  /* [zh] 样式规则 `z-index: 1;` */
-  z-index: 1;
-  /* [zh] 样式规则 `color: $color-gold;` */
-  color: $color-gold;
-  /* [zh] 样式规则 `flex-shrink: 0;` */
-  flex-shrink: 0;
-  /* [zh] 样式规则 `display: flex;` */
-  display: flex;
-  /* [zh] 样式规则 `align-items: center;` */
-  align-items: center;
-  /* [zh] 样式规则 `opacity: 0.5;` */
-  opacity: 0.5;
-  /* [zh] 样式规则 `transition: opacity 0.2s;` */
-  transition: opacity 0.2s;
-
-  /* [zh] 样式规则 `.ai-guide-card:hover & {` */
-  .ai-guide-card:hover & {
-    /* [zh] 样式规则 `opacity: 1;` */
-    opacity: 1;
-  /* [zh] 样式规则 `}` */
-  }
-/* [zh] 样式规则 `}` */
-}
-
-/* [zh] 样式规则 `@media (max-width: 400px) {` */
-@media (max-width: 400px) {
-  /* [zh] 样式规则 `.ai-guide-card {` */
-  .ai-guide-card {
-    /* [zh] 样式规则 `flex-direction: column;` */
-    flex-direction: column;
-    /* [zh] 样式规则 `align-items: stretch;` */
-    align-items: stretch;
-  /* [zh] 样式规则 `}` */
-  }
-
-  /* [zh] 样式规则 `.ai-guide-left {` */
-  .ai-guide-left {
-    /* [zh] 样式规则 `flex: none;` */
-    flex: none;
-  /* [zh] 样式规则 `}` */
-  }
-
-  /* [zh] 样式规则 `.ai-prompts {` */
-  .ai-prompts {
-    /* [zh] 样式规则 `width: 100%;` */
-    width: 100%;
-    /* [zh] 样式规则 `justify-content: center;` */
-    justify-content: center;
-  /* [zh] 样式规则 `}` */
-  }
-
-  /* [zh] 样式规则 `.ai-arrow {` */
-  .ai-arrow {
-    /* [zh] 样式规则 `display: none;` */
-    display: none;
-  /* [zh] 样式规则 `}` */
-  }
-/* [zh] 样式规则 `}` */
-}
+<style scoped>
+.shopping-studio{box-sizing:border-box;padding:30px 32px 14px;background:linear-gradient(115deg,#fff7ed,#f9f4ef 65%,#f1ede8);border:1px solid #eee3d7;border-radius:18px;color:#292622;margin:0 0 22px;overflow:hidden}
+.studio-heading{display:flex;justify-content:space-between;align-items:center;gap:24px;margin-bottom:24px}.studio-copy{flex:1;min-width:0}.studio-kicker{display:inline-flex;align-items:center;gap:7px;color:#996039;font-size:12px;font-weight:600;letter-spacing:1px}.kicker-dot{height:6px;width:6px;border-radius:50%;background:#d76b34}.studio-copy h1{font-size:clamp(26px,2.4vw,36px);font-weight:750;line-height:1.4;letter-spacing:-1px;margin:12px 0 8px}.studio-copy h1 span{color:#b65c30}.studio-copy p{font-size:13px;line-height:1.8;color:#817568;margin:0}.studio-links{display:flex;align-items:center;gap:22px;margin-top:18px}.studio-links a{font-size:12px;text-decoration:none;color:#83786c}.studio-links a:first-child{color:#46382a;font-weight:600}.studio-links a span{margin-left:8px}
+.studio-products{display:flex;gap:12px;flex:0 1 430px}.studio-product{width:calc((100% - 24px)/3);height:122px;box-sizing:border-box;background:#ffffffc9;border:1px solid #fff;border-radius:14px;padding:12px 10px 24px;text-decoration:none;color:#66584a;position:relative;transition:transform .2s}.studio-product:hover{transform:translateY(-4px)}.studio-product>span{position:absolute;bottom:8px;left:10px;right:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px}.studio-aside{text-align:right;color:#9e8c78;min-width:180px}.studio-aside>span{font-size:9px;letter-spacing:2px}.studio-aside strong{display:block;font-size:24px;line-height:1.5;font-weight:500;margin-top:10px}
+.studio-form{display:grid;grid-template-columns:1.2fr 1fr .7fr auto;gap:18px;align-items:center;padding:16px 18px;background:#fff;border:1px solid #f0e7df;border-radius:12px;box-shadow:0 6px 20px #76512b05}.form-title{display:flex;align-items:center;gap:10px;font-size:14px;font-weight:600;white-space:nowrap}.form-title small{display:block;font-size:10px;font-weight:400;color:#a09890;margin-top:5px}.ai-badge{display:grid;place-items:center;width:34px;height:34px;border-radius:10px;color:#be632e;background:#fff0df;font-size:13px}.studio-form label{display:flex;flex-direction:column;gap:5px;font-size:10px;color:#8a8177}.studio-form input{width:100%;min-width:0;box-sizing:border-box;border:0;border-bottom:1px solid #e9e3dc;background:transparent;padding:5px 0 7px;color:#342d25;font-size:14px;outline:none}.studio-form input:focus{border-color:#d77b45}.budget-field{display:flex;gap:7px;align-items:center;color:#a98260;font-size:13px}.studio-submit{border:0;border-radius:8px;background:#c46a37;color:#fff;padding:13px 20px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}.studio-submit:hover{background:#ad582b}.studio-submit span{margin-left:12px}.studio-bottom{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:10px;font-size:10px;color:#a19385}.quick-categories{display:flex;gap:12px;align-items:center}.quick-categories button{border:0;background:none;color:#8a7865;font-size:10px;padding:4px 0;cursor:pointer}.quick-categories button:hover{color:#b65c30}
+@media(max-width:900px){.shopping-studio{padding:24px}.studio-products{flex-basis:300px}.studio-product{height:110px}.form-title small{display:none}.studio-form{gap:12px;grid-template-columns:auto 1fr .65fr auto}.studio-copy h1 span{display:block}}
+@media(max-width:760px){.shopping-studio{margin:12px;padding:20px 16px 12px;border-radius:14px}.studio-heading{margin-bottom:18px}.studio-products,.studio-aside{display:none}.studio-copy h1{font-size:26px}.studio-copy h1 span{display:inline}.studio-copy p{font-size:12px}.studio-links{margin-top:12px}.studio-form{grid-template-columns:1fr .7fr;padding:14px;gap:14px}.form-title{grid-column:1/-1}.studio-submit{grid-column:1/-1}.studio-bottom{align-items:flex-start}.studio-bottom>span{max-width:110px;text-align:right;font-size:9px}}
 </style>

@@ -1,4 +1,6 @@
 import json
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 import httpx
 import structlog
@@ -11,6 +13,26 @@ from app.services.java_internal_client import java_internal_client
 logger = structlog.get_logger()
 
 PRODUCT_INDEX = "simlect-index"
+
+# Optional request-local diagnostics for strict shopping. Existing callers still
+# receive list[str]/list[dict] and keep their established fallback semantics.
+_RECALL_DIAGNOSTICS: ContextVar[dict | None] = ContextVar('recall_diagnostics', default=None)
+
+
+@contextmanager
+def recall_diagnostics():
+    value = {}
+    token = _RECALL_DIAGNOSTICS.set(value)
+    try:
+        yield value
+    finally:
+        _RECALL_DIAGNOSTICS.reset(token)
+
+
+def _record_recall(**values):
+    current = _RECALL_DIAGNOSTICS.get()
+    if current is not None:
+        current.update(values)
 
 
 def _escape_wildcard(text: str) -> str:
@@ -61,8 +83,10 @@ class RagRetriever:
     async def search_product_keyword_ids(self, query: str, limit: int) -> list[str]:
 
         breaker = circuit_registry.get_or_create("es", failure_threshold=3, recovery_timeout=30)
-        if not breaker.allow_request() or not query.strip():
-            return []
+        if not query.strip(): return []
+        if not breaker.allow_request():
+            _record_recall(backend_failed=True, degraded=True, error_code='ES_UNAVAILABLE')
+            return await self._product_search_fallback(query, limit)
         try:
             body = {
                 "size": min(max(limit, 1), 50),
@@ -83,11 +107,12 @@ class RagRetriever:
                 resp.raise_for_status()
                 hits = resp.json().get("hits", {}).get("hits", [])
             breaker.record_success()
-            return [h["_source"]["productId"] for h in hits if h.get("_source", {}).get("productId")]
+            ids = list(dict.fromkeys(h["_source"]["productId"] for h in hits if h.get("_source", {}).get("productId")))
+            return ids or await self._product_search_fallback(query, limit)
         except Exception as e:
             breaker.record_failure()
             logger.error("es_keyword_search_failed", error=str(e))
-
+            _record_recall(backend_failed=True, degraded=True, error_code='ES_UNAVAILABLE')
             return await self._product_search_fallback(query, limit)
 
     async def _vector_search(
@@ -99,20 +124,26 @@ class RagRetriever:
     ) -> list[dict]:
 
         settings = get_settings()
+        if not settings.vector_search_enabled:
+            return []
         k = top_k or settings.rag_top_k
 
         th = threshold if threshold is not None else settings.rag_score_threshold
-        breaker = circuit_registry.get_or_create("es")
+        breaker = circuit_registry.get_or_create("es_vector")
         if not breaker.allow_request():
+            _record_recall(failed=True, degraded=True, error_code='ES_UNAVAILABLE')
             return []
-        vector = await embed_text(query)
-        if not vector:
-            return []
+        phase = 'embedding'
         try:
+            vector = await embed_text(query)
+            if not vector:
+                _record_recall(failed=True, degraded=True, error_code='EMBEDDING_UNAVAILABLE')
+                return []
+            phase = 'es'
             body = {
                 "size": k,
                 "knn": {
-                    "field": "content_vector",
+                    "field": "embedding",
                     "query_vector": vector,
                     "k": k,
                     "num_candidates": k * 2,
@@ -129,13 +160,6 @@ class RagRetriever:
                     self._es_url(f"/{settings.es_index}/_search"),
                     json=body,
                 )
-                if resp.status_code == 404:
-
-                    body["knn"]["field"] = "vector"
-                    resp = await client.post(
-                        self._es_url(f"/{settings.es_index}/_search"),
-                        json=body,
-                    )
                 resp.raise_for_status()
                 hits = resp.json().get("hits", {}).get("hits", [])
             breaker.record_success()
@@ -154,6 +178,8 @@ class RagRetriever:
         except Exception as e:
             breaker.record_failure()
             logger.error("vector_search_failed", data_type=data_type, error=str(e))
+            _record_recall(failed=True, degraded=True,
+                           error_code='EMBEDDING_UNAVAILABLE' if phase == 'embedding' else 'ES_UNAVAILABLE')
             return []
 
     async def _product_search_fallback(self, query: str, limit: int) -> list[str]:
@@ -168,6 +194,11 @@ class RagRetriever:
             return ids
         except Exception as e:
             logger.error("product_search_fallback_failed", error=str(e))
+            current = _RECALL_DIAGNOSTICS.get() or {}
+            # ES may have produced a valid empty result. Only call the whole
+            # route unavailable when both primary and fallback failed.
+            _record_recall(failed=bool(current.get('backend_failed')), degraded=True,
+                           error_code=current.get('error_code') or 'JAVA_UNAVAILABLE')
             return []
 
 rag_retriever = RagRetriever()

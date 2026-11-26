@@ -72,6 +72,45 @@ class PayNotifyControllerTest {
     }
 
     @Test
+    void ambiguousRepeatedParametersAreRejectedBeforeSignatureAndBusiness() throws Exception {
+        mockMvc.perform(post("/notify/alipayNotify").param("total_amount","100.00","1.00"))
+                .andExpect(status().isOk()).andExpect(content().string("failure"));
+        verify(payChannel,never()).payNotify(anyMap(),isNull());
+        verify(orderFeignSupport,never()).paySuccess(any());
+        verify(redissonClient,never()).getLock(anyString());
+    }
+
+    @Test
+    void channelCannotReturnAmountlessDtoToBusiness() throws Exception {
+        try (MockedStatic<SpringContext> ctx = mockStatic(SpringContext.class)) {
+            ctx.when(() -> SpringContext.getBean("payChannel4Alipay")).thenReturn(payChannel);
+            when(payChannel.payNotify(anyMap(),isNull())).thenReturn(new PayOrderNotifyDTO(PAY_ORDER_ID,"CH1"));
+            mockMvc.perform(post("/notify/alipayNotify").param("out_trade_no",PAY_ORDER_ID))
+                    .andExpect(status().isOk()).andExpect(content().string("failure"));
+            verify(orderFeignSupport,never()).paySuccess(any());
+            verify(redissonClient,never()).getLock(anyString());
+        }
+    }
+
+    @Test
+    void busyFirstCallbackCanRetryAfterHolderFails() throws Exception {
+        try (MockedStatic<SpringContext> ctx = mockStatic(SpringContext.class)) {
+            ctx.when(() -> SpringContext.getBean("payChannel4Alipay")).thenReturn(payChannel);
+            when(payChannel.payNotify(anyMap(),isNull()))
+                    .thenReturn(new PayOrderNotifyDTO(PAY_ORDER_ID,"CH1",new java.math.BigDecimal("100.00")));
+            when(redissonClient.getLock(anyString())).thenReturn(lock);
+            when(lock.tryLock(LOCK_WAIT_MS,-1,TimeUnit.MILLISECONDS)).thenReturn(false,true);
+            when(lock.isHeldByCurrentThread()).thenReturn(true);
+            mockMvc.perform(post("/notify/alipayNotify").param("out_trade_no",PAY_ORDER_ID))
+                    .andExpect(content().string("failure"));
+            mockMvc.perform(post("/notify/alipayNotify").param("out_trade_no",PAY_ORDER_ID))
+                    .andExpect(content().string("success"));
+            verify(orderFeignSupport).paySuccess(any());
+            verify(lock).unlock();
+        }
+    }
+
+    @Test
     void alipayNotify_signCheckFailure_returnsFailure() throws Exception {
         try (MockedStatic<SpringContext> ctx = mockStatic(SpringContext.class)) {
             ctx.when(() -> SpringContext.getBean("payChannel4Alipay")).thenReturn(payChannel);
@@ -106,7 +145,7 @@ class PayNotifyControllerTest {
     }
 
     @Test
-    void alipayNotify_payOrderIdNull_returnsSuccess() throws Exception {
+    void alipayNotify_payOrderIdNull_returnsFailure() throws Exception {
         try (MockedStatic<SpringContext> ctx = mockStatic(SpringContext.class)) {
             ctx.when(() -> SpringContext.getBean("payChannel4Alipay")).thenReturn(payChannel);
             when(payChannel.payNotify(anyMap(), isNull())).thenReturn(new PayOrderNotifyDTO(null, "CH1"));
@@ -115,18 +154,18 @@ class PayNotifyControllerTest {
                             .param("out_trade_no", PAY_ORDER_ID)
                             .param("trade_status", "TRADE_SUCCESS"))
                     .andExpect(status().isOk())
-                    .andExpect(content().string("success"));
+                    .andExpect(content().string("failure"));
 
             verify(redissonClient, never()).getLock(anyString());
         }
     }
 
     @Test
-    void alipayNotify_duplicateCallback_lockBusy_returnsSuccessAndIgnores() throws Exception {
+    void alipayNotify_duplicateCallback_lockBusy_returnsFailureForRetry() throws Exception {
         try (MockedStatic<SpringContext> ctx = mockStatic(SpringContext.class)) {
             ctx.when(() -> SpringContext.getBean("payChannel4Alipay")).thenReturn(payChannel);
             when(payChannel.payNotify(anyMap(), isNull()))
-                    .thenReturn(new PayOrderNotifyDTO(PAY_ORDER_ID, "CH1"));
+                    .thenReturn(new PayOrderNotifyDTO(PAY_ORDER_ID, "CH1", new java.math.BigDecimal("100.00")));
             when(redissonClient.getLock(anyString())).thenReturn(lock);
             when(lock.tryLock(LOCK_WAIT_MS, -1, TimeUnit.MILLISECONDS)).thenReturn(false);
 
@@ -134,7 +173,7 @@ class PayNotifyControllerTest {
                             .param("out_trade_no", PAY_ORDER_ID)
                             .param("trade_status", "TRADE_SUCCESS"))
                     .andExpect(status().isOk())
-                    .andExpect(content().string("success"));
+                    .andExpect(content().string("failure"));
 
             verify(orderFeignSupport, never()).paySuccess(any());
             verify(lock, never()).unlock();
@@ -146,7 +185,7 @@ class PayNotifyControllerTest {
         try (MockedStatic<SpringContext> ctx = mockStatic(SpringContext.class)) {
             ctx.when(() -> SpringContext.getBean("payChannel4Alipay")).thenReturn(payChannel);
             when(payChannel.payNotify(anyMap(), isNull()))
-                    .thenReturn(new PayOrderNotifyDTO(PAY_ORDER_ID, "CH1"));
+                    .thenReturn(new PayOrderNotifyDTO(PAY_ORDER_ID, "CH1", new java.math.BigDecimal("100.00")));
             when(redissonClient.getLock(anyString())).thenReturn(lock);
             when(lock.tryLock(LOCK_WAIT_MS, -1, TimeUnit.MILLISECONDS)).thenReturn(true);
             when(lock.isHeldByCurrentThread()).thenReturn(true);
@@ -167,7 +206,7 @@ class PayNotifyControllerTest {
         try (MockedStatic<SpringContext> ctx = mockStatic(SpringContext.class)) {
             ctx.when(() -> SpringContext.getBean("payChannel4Alipay")).thenReturn(payChannel);
             when(payChannel.payNotify(anyMap(), isNull()))
-                    .thenReturn(new PayOrderNotifyDTO(PAY_ORDER_ID, "CH1"));
+                    .thenReturn(new PayOrderNotifyDTO(PAY_ORDER_ID, "CH1", new java.math.BigDecimal("100.00")));
             when(redissonClient.getLock(anyString())).thenReturn(lock);
             when(lock.tryLock(LOCK_WAIT_MS, -1, TimeUnit.MILLISECONDS)).thenReturn(true);
             when(lock.isHeldByCurrentThread()).thenReturn(true);
@@ -189,7 +228,7 @@ class PayNotifyControllerTest {
         try (MockedStatic<SpringContext> ctx = mockStatic(SpringContext.class)) {
             ctx.when(() -> SpringContext.getBean("payChannel4Alipay")).thenReturn(payChannel);
             when(payChannel.payNotify(anyMap(), isNull()))
-                    .thenReturn(new PayOrderNotifyDTO(PAY_ORDER_ID, "CH1"));
+                    .thenReturn(new PayOrderNotifyDTO(PAY_ORDER_ID, "CH1", new java.math.BigDecimal("100.00")));
             when(redissonClient.getLock(anyString())).thenReturn(lock);
             when(lock.tryLock(LOCK_WAIT_MS, -1, TimeUnit.MILLISECONDS)).thenReturn(true);
             when(lock.isHeldByCurrentThread()).thenReturn(true);
@@ -210,7 +249,7 @@ class PayNotifyControllerTest {
         try (MockedStatic<SpringContext> ctx = mockStatic(SpringContext.class)) {
             ctx.when(() -> SpringContext.getBean("payChannel4Alipay")).thenReturn(payChannel);
             when(payChannel.payNotify(anyMap(), isNull()))
-                    .thenReturn(new PayOrderNotifyDTO(PAY_ORDER_ID, "CH1"));
+                    .thenReturn(new PayOrderNotifyDTO(PAY_ORDER_ID, "CH1", new java.math.BigDecimal("100.00")));
             when(redissonClient.getLock(anyString())).thenReturn(lock);
             when(lock.tryLock(LOCK_WAIT_MS, -1, TimeUnit.MILLISECONDS))
                     .thenThrow(new InterruptedException());
@@ -231,7 +270,7 @@ class PayNotifyControllerTest {
         try (MockedStatic<SpringContext> ctx = mockStatic(SpringContext.class)) {
             ctx.when(() -> SpringContext.getBean("payChannel4Alipay")).thenReturn(payChannel);
             when(payChannel.payNotify(anyMap(), isNull()))
-                    .thenReturn(new PayOrderNotifyDTO(PAY_ORDER_ID, "CH1"));
+                    .thenReturn(new PayOrderNotifyDTO(PAY_ORDER_ID, "CH1", new java.math.BigDecimal("100.00")));
             when(redissonClient.getLock(anyString())).thenReturn(lock);
             when(lock.tryLock(LOCK_WAIT_MS, -1, TimeUnit.MILLISECONDS)).thenReturn(true);
             when(lock.isHeldByCurrentThread()).thenReturn(false);

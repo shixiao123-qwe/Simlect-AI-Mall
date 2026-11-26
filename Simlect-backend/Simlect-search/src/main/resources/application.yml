@@ -88,7 +88,7 @@ spring:
           dimensions: 1024
     vectorstore:
       elasticsearch:
-        initialize-schema: true
+        initialize-schema: ${VECTOR_SEARCH_ENABLED:true}
         dimensions: 1024
         index-name: ${VECTOR_INDEX:simlect_vectorstore}
 

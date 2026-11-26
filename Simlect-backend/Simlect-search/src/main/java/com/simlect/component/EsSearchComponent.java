@@ -97,17 +97,10 @@ public class EsSearchComponent {
             Criteria criteria = new Criteria();
             Boolean hasCondition = false;
 
-            // 对于商品名
-            // 如果productName少于等于2个字，精准匹配
+            // Analyzed text must use match; substring queries belong on the keyword subfield.
             if (!StringTools.isEmpty(keyWords)) {
-                Criteria productNameCriteria;
-                if (keyWords.length() <= 2){
-                    productNameCriteria = new Criteria("productName").contains(keyWords);
-                    productNameCriteria.or(new Criteria("productName").matches(keyWords));
-                    productNameCriteria.or(new Criteria("productName").expression("*" + keyWords + "*"));
-                }else {
-                    productNameCriteria = new Criteria("productName").contains(keyWords);
-                }
+                Criteria productNameCriteria = new Criteria("productName").matchesAll(keyWords);
+                productNameCriteria.or(new Criteria("productName.keyword").contains(keyWords));
                 criteria.and(productNameCriteria);
                 hasCondition = true;
             }

@@ -16,6 +16,9 @@
         <result column="create_time" property="createTime"/>
         <result column="update_time" property="updateTime"/>
         <result column="sent_time" property="sentTime"/>
+        <result column="lease_owner" property="leaseOwner"/>
+        <result column="lease_until" property="leaseUntil"/>
+        <result column="next_attempt_time" property="nextAttemptTime"/>
     </resultMap>
 
     <insert id="insert" useGeneratedKeys="true" keyProperty="id">
@@ -46,6 +49,8 @@
             </if>
         where id = #{id}
           and status = #{fromStatus}
+          and status in (0, 3) and #{toStatus} in (0, 3)
+          and lease_owner is null
     </update>
 
     <select id="selectDispatchBatch" resultMap="base_result_map">
@@ -58,4 +63,53 @@
         order by id asc
         limit #{limit}
     </select>
+    <sql id="expired_lease">
+        (lease_until &lt;= now(3) OR
+         (lease_until IS NULL AND coalesce(update_time, create_time) &lt;= timestampadd(SECOND, -#{leaseSeconds}, now(3))))
+    </sql>
+    <sql id="ready">
+        ifnull(retry_count, 0) &lt; #{maxAttempts}
+        AND (next_attempt_time IS NULL OR next_attempt_time &lt;= now(3))
+        AND (status IN (0, 3) OR (status = 1 AND <include refid="expired_lease"/>))
+    </sql>
+    <sql id="retry_delay">
+        least(#{backoffMaxSeconds}, #{backoffBaseSeconds} * pow(2, least(greatest(ifnull(retry_count, 0) - 1, 0), 30)))
+    </sql>
+    <update id="claimLease">
+        UPDATE local_message_outbox
+        SET status = 1, lease_owner = #{owner},
+            lease_until = timestampadd(SECOND, #{leaseSeconds}, now(3)),
+            retry_count = ifnull(retry_count, 0) + 1,
+            next_attempt_time = timestampadd(SECOND, #{leaseSeconds} + <include refid="retry_delay"/>, now(3)),
+            update_time = now(3)
+        WHERE id = #{id} AND <include refid="ready"/>
+    </update>
+    <select id="ownsLease" resultType="java.lang.Integer">
+        SELECT count(*) FROM local_message_outbox
+        WHERE id = #{id} AND status = 1 AND lease_owner = #{owner} AND lease_until &gt; now(3)
+    </select>
+    <update id="completeLease">
+        UPDATE local_message_outbox
+        SET status = <choose><when test="sent">2</when><otherwise>3</otherwise></choose>,
+            sent_time = <choose><when test="sent">now(3)</when><otherwise>NULL</otherwise></choose>,
+            error_message = #{error},
+            next_attempt_time = <choose><when test="sent">NULL</when>
+                <otherwise>timestampadd(SECOND, <include refid="retry_delay"/>, now(3))</otherwise></choose>,
+            lease_owner = NULL, lease_until = NULL, update_time = now(3)
+        WHERE id = #{id} AND status = 1 AND lease_owner = #{owner} AND lease_until &gt; now(3)
+    </update>
+    <select id="selectReadyBatch" resultMap="base_result_map">
+        SELECT * FROM local_message_outbox
+        WHERE <include refid="ready"/>
+          AND create_time &lt;= timestampadd(SECOND, -3, now(3))
+        ORDER BY id ASC LIMIT #{limit}
+    </select>
+    <update id="expireExhausted">
+        UPDATE local_message_outbox
+        SET status = 3, lease_owner = NULL, lease_until = NULL, next_attempt_time = NULL,
+            error_message = 'Final lease expired; delivery outcome unknown; manual review required', update_time = now(3)
+        WHERE status = 1 AND ifnull(retry_count, 0) &gt;= #{maxAttempts}
+          AND <include refid="expired_lease"/>
+        ORDER BY id ASC LIMIT #{limit}
+    </update>
 </mapper>

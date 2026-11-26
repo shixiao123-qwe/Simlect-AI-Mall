@@ -1,0 +1,27 @@
+{
+  "dataset": "Amazon Berkeley Objects",
+  "attribution": "Amazon.com; ABO dataset authors (see ATTRIBUTION.md)",
+  "license": "https://creativecommons.org/licenses/by/4.0/",
+  "source": "https://amazon-berkeley-objects.s3.amazonaws.com/index.html",
+  "products": 50,
+  "categories": {
+    "A9101": 6,
+    "A9102": 10,
+    "A9103": 9,
+    "A9104": 10,
+    "A9105": 4,
+    "A9106": 10,
+    "A9107": 1
+  },
+  "imageBytes": 344442,
+  "sqlSha256": "59ea47e782d0d8c6fa3015ec610787f2c6811ecae8098920d54d4dd10bc57862",
+  "changes": [
+    "Selected 50 records",
+    "Added Chinese category labels",
+    "Escaped source descriptions as HTML",
+    "Generated default test SKU and CNY test price/inventory",
+    "Downloaded existing 256px source images",
+    "Normalized 50 display titles; moved source-miscategorized vacuum bags to cleaning category; preserved raw records"
+  ],
+  "curationSqlSha256": "cdad6afeebb7ca2790a3eb99e763dbc07bf708501d2e17dd216ed990ecc59dd5"
+}

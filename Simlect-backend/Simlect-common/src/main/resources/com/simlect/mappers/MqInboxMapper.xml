@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.simlect.mappers.MqInboxMapper">
+    <insert id="insertProcessing">
+        INSERT IGNORE INTO mq_consumer_inbox(consumer_name,event_id,event_type,status,created_time)
+        VALUES(#{consumer},#{eventId},#{eventType},'PROCESSING',now(3))
+    </insert>
+    <insert id="insertFailed">
+        INSERT IGNORE INTO mq_consumer_inbox(consumer_name,event_id,event_type,status,created_time)
+        VALUES(#{consumer},#{eventId},#{eventType},'FAILED',now(3))
+    </insert>
+    <select id="lock" resultType="java.util.HashMap">
+        SELECT status, failure_count AS failureCount, dlq_enqueued AS dlqEnqueued
+        FROM mq_consumer_inbox WHERE consumer_name=#{consumer} AND event_id=#{eventId} FOR UPDATE
+    </select>
+    <update id="begin">
+        UPDATE mq_consumer_inbox SET status='PROCESSING'
+        WHERE consumer_name=#{consumer} AND event_id=#{eventId} AND status='FAILED' AND dlq_enqueued=0
+    </update>
+    <update id="complete">
+        UPDATE mq_consumer_inbox SET status='DONE',completed_time=now(3),error_message=NULL
+        WHERE consumer_name=#{consumer} AND event_id=#{eventId} AND status='PROCESSING'
+    </update>
+    <update id="fail">
+        UPDATE mq_consumer_inbox SET failure_count=failure_count+1,error_message=#{error}
+        WHERE consumer_name=#{consumer} AND event_id=#{eventId} AND status='FAILED' AND dlq_enqueued=0
+    </update>
+    <update id="markDeadLettered">
+        UPDATE mq_consumer_inbox SET dlq_enqueued=1
+        WHERE consumer_name=#{consumer} AND event_id=#{eventId} AND status='FAILED' AND dlq_enqueued=0
+    </update>
+</mapper>

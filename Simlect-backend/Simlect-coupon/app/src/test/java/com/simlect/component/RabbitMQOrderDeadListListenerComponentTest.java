@@ -34,6 +34,27 @@ import static org.mockito.Mockito.when;
 @ExtendWith(MockitoExtension.class)
 class RabbitMQOrderDeadListListenerComponentTest {
 
+    private boolean inboxDone;
+    @org.junit.jupiter.api.BeforeEach
+    void wireInboxRunnerMock() {
+        // This fixture models a committed Inbox outcome. Common and container tests verify real transactions.
+        org.mockito.Mockito.doAnswer(call -> {
+            String queue = call.getArgument(0);
+            Message message = call.getArgument(2);
+            Channel channel = call.getArgument(3);
+            Object payload = call.getArgument(4);
+            if (inboxDone) { channel.basicAck(message.getMessageProperties().getDeliveryTag(), false); return null; }
+            try {
+                call.<Runnable>getArgument(5).run();
+                channel.basicAck(message.getMessageProperties().getDeliveryTag(), false);
+            } catch (Exception failure) {
+                mqListenerHelper.nackWithRetryOrDlq(channel,message.getMessageProperties().getDeliveryTag(),message,queue,payload,failure);
+            }
+            return null;
+        }).when(mqListenerHelper).consumeInbox(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
+    }
+
     @Mock
     private DiscountCouponService discountCouponService;
     @Mock
@@ -68,8 +89,7 @@ class RabbitMQOrderDeadListListenerComponentTest {
     }
 
     private void mockConsumeAllowed() {
-        when(mqListenerHelper.tryBeginConsume(any(), eq(MqListenerHelper.CONSUME_IDEMPOTENCY_TTL_STANDARD_SECONDS)))
-                .thenReturn(true);
+        inboxDone = false;
     }
 
     private OrderBriefVO order(int status) {
@@ -81,8 +101,7 @@ class RabbitMQOrderDeadListListenerComponentTest {
     @Test
     void handleDeadOrder_idempotencyRejected_acksOnly() throws Exception {
         Channel channel = mock(Channel.class);
-        when(mqListenerHelper.tryBeginConsume(any(), eq(MqListenerHelper.CONSUME_IDEMPOTENCY_TTL_STANDARD_SECONDS)))
-                .thenReturn(false);
+        inboxDone = true;
 
         listener.handleDeadOrder(message(ORDER_ID), channel, rabbitMessage());
 
@@ -126,7 +145,7 @@ class RabbitMQOrderDeadListListenerComponentTest {
         listener.handleDeadOrder(message(ORDER_ID), channel, rabbitMessage());
 
         verify(orderFeignSupport).cancelOrder(ORDER_ID, null);
-        verify(mqListenerHelper).clearConsumeRetry(RabbitMQConfig.RUSHING_DEAD_QUEUE, rabbitMessage());
+        verify(mqListenerHelper).consumeInbox(eq(RabbitMQConfig.RUSHING_DEAD_QUEUE),org.mockito.ArgumentMatchers.anyString(),any(),any(),any(),any());
         verify(channel).basicAck(DELIVERY_TAG, false);
     }
 

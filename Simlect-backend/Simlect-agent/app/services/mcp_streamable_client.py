@@ -28,6 +28,8 @@ from __future__ import annotations  # import：延迟类型注解，允许 str |
 
 import asyncio  # import：超时保护（asyncio.timeout / asyncio.TimeoutError）
 import json  # import：JSON 序列化，用于非 text 类型的 content 块
+from app.services.tool_invoke_result import ToolInvokeResult
+from app.services.request_context import TRACE_HEADER, get_trace_id
 from contextlib import asynccontextmanager  # import：@asynccontextmanager 装饰器，类似 try-with-resources
 from typing import Any, AsyncIterator  # import：Any ~ Object；AsyncIterator ~ Stream<T>
 
@@ -53,7 +55,7 @@ class McpStreamableClient:  # MCP 流式 HTTP 客户端类 — 类似 Java @Comp
         settings = get_settings()  # 加载配置 — 取内部令牌注入请求头（服务端中间件校验）
         endpoint = self._url if self._url.endswith("/mcp") else f"{self._url}/mcp"  # 确保 endpoint 以 /mcp 结尾
         # 每个请求携带 X-Internal-Token：MCP 服务端统一鉴权，防 IDOR
-        async with streamablehttp_client(endpoint, headers={"X-Internal-Token": settings.internal_token}) as (read, write, _get_session_id):  # 建立 HTTP 双工流
+        async with streamablehttp_client(endpoint, headers={"X-Internal-Token": settings.internal_token, TRACE_HEADER: get_trace_id()}) as (read, write, _get_session_id):  # 建立 HTTP 双工流
             async with ClientSession(read, write) as session:  # 在读写流上创建 MCP 会话
                 await session.initialize()  # MCP 握手：交换协议版本与能力
                 yield session  # 产出 session 给 with 块使用
@@ -77,13 +79,17 @@ class McpStreamableClient:  # MCP 流式 HTTP 客户端类 — 类似 Java @Comp
         except (TimeoutError, asyncio.TimeoutError):  # 超时 — MCP 进程无响应
             logger.warning("mcp_list_tools_timeout")
             return []  # 返回空清单（调用方降级为无工具可用）
-        except Exception:  # 连接层异常（MCP 进程未启动/网络中断）
-            logger.warning("mcp_list_tools_failed", exc_info=True)
+        except Exception as exc:  # 连接层异常（MCP 进程未启动/网络中断）
+            logger.warning("mcp_list_tools_failed", error_type=type(exc).__name__)
             return []
 
     async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> str:  # 远程调用指定 MCP 工具
         # 超时保护：慢工具不挂死 Agent（默认 30s，可经 settings.mcp_client_timeout 覆盖）
         timeout = float(getattr(get_settings(), "mcp_client_timeout", 30) or 30)
+        read_only = name in {"SEARCH_PRODUCTS", "RECOMMEND_PRODUCTS", "COMPARE_PRODUCTS", "QUERY_ORDERS",
+                             "GET_ORDER_DETAIL", "GET_PRODUCT_DETAIL", "QUERY_LOGISTICS", "QUERY_COMMENT",
+                             "QUERY_USER_COUPONS", "QUERY_AFTER_SALE_POLICY", "CHECK_AFTER_SALE_ELIGIBILITY",
+                             "QUERY_AFTER_SALE_REQUESTS"}
         try:
             async with asyncio.timeout(timeout):
                 async with self._session() as session:  # 每次 call 新建短连接 session
@@ -97,16 +103,22 @@ class McpStreamableClient:  # MCP 流式 HTTP 客户端类 — 类似 Java @Comp
                         else:  # 非文本块则 JSON 序列化
                             parts.append(json.dumps(block.model_dump() if hasattr(block, "model_dump") else str(block)))
                     if getattr(result, "isError", False):  # MCP 协议标记的错误响应
-                        logger.warning("mcp_tool_error", tool=name, content=parts)  # 打 warning 日志（内部细节只进日志）
+                        logger.warning("mcp_tool_error", tool=name, block_count=len(parts))
                         # 错误细节不回传 LLM/用户（防内部信息泄露），给通用失败文案
-                        return "【工具执行失败】该操作未成功，请稍后重试或联系客服"
-                    return "\n".join(parts) if parts else ""  # 多段文本用换行拼接；无内容返回空串
+                        return ToolInvokeResult.failure("【工具执行失败】该操作未成功，请稍后重试或联系客服",
+                                                        "MCP_PROTOCOL_ERROR", status="transport_error").to_wire()
+                    if not parts:
+                        return ToolInvokeResult.failure("【工具响应异常】服务返回内容为空，请稍后重试",
+                                                        "INVALID_TOOL_RESPONSE").to_wire()
+                    return "\n".join(parts)
         except (TimeoutError, asyncio.TimeoutError):
             logger.warning("mcp_tool_timeout", tool=name)
-            return f"【工具调用超时】工具 {name} 响应超时，请稍后重试"
-        except Exception:  # 连接层异常 — MCP 进程未启动、EOF、握手失败等
-            logger.warning("mcp_tool_call_failed", tool=name, exc_info=True)
-            return "【工具调用失败】服务暂时不可用，请稍后重试"
+            return ToolInvokeResult.failure(f"【工具调用超时】工具 {name} 响应超时，请稍后重试",
+                                            "MCP_TIMEOUT", status="transport_error", retryable=read_only).to_wire()
+        except Exception as exc:  # 连接层异常 — MCP 进程未启动、EOF、握手失败等
+            logger.warning("mcp_tool_call_failed", tool=name, error_type=type(exc).__name__)
+            return ToolInvokeResult.failure("【工具调用失败】服务暂时不可用，请稍后重试",
+                                            "MCP_UNAVAILABLE", status="transport_error", retryable=read_only).to_wire()
 
 
 mcp_streamable_client = McpStreamableClient()  # 模块级单例 — 全局共享一个客户端实例

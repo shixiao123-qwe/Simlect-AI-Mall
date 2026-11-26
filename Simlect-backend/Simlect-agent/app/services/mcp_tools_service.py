@@ -36,7 +36,6 @@ from app.constants import (  # import：从常量模块批量导入枚举/配置
     CONFIRM_RECEIPT_ORDER_STATUSES,  # 允许确认收货的订单状态集合（类似 Java Set<Integer>）
     ORDER_ITEM_STATUS_NORMAL,  # 订单项正常状态码（类似 Java 枚举 int 值）
     ORDER_STATUS_NAMES,  # 订单状态码 -> 中文名映射（类似 Map<Integer, String>）
-    REFUNDABLE_ORDER_STATUSES,  # 允许退款的订单状态集合
     REVIEWABLE_ORDER_STATUSES,  # 允许评价/追评的订单状态集合
 )
 
@@ -299,90 +298,15 @@ async def propose_confirm_receipt(user_id: str, order_id: str) -> str:
         return f"【确认收货失败】系统处理异常，请稍后重试或联系客服。错误信息：请稍后重试或联系客服"
 
 
-async def propose_refund(user_id: str, order_item_id: str) -> str:
-    """
-    提案：申请退款（写操作第一阶段，支持订单项 ID 或订单号兜底）。
-
-    Java 类比：类似 RefundService.propose(userId, orderItemId) 只落 Redis pending，
-    不调用 Java 退款接口；用户 confirm 后才真正 refund。
-    LLM 常误传 orderId 而非 orderItemId，本函数有多项可退时的歧义处理。
-    """
-    if not order_item_id:  # 参数不能为空
-        return "【退款失败】请输入要退款的订单项ID"
-    try:  # try-except 包裹整段退款提案逻辑
-        from app.utils.order_ids import extract_order_id, extract_order_item_id  # 延迟 import：避免模块级循环依赖（类似 Java 懒加载 Bean）
-
-        # 规范化：优先解析为 orderItemId；纯订单号会在下方 fallback 分支处理
-        normalized = extract_order_item_id(order_item_id) or (order_item_id or "").strip()  # 规范化 ID，或保留 trim 后的原串
-        item = await order_service.get_order_item(normalized)  # 按 ID 查订单项
-        if not item:  # 查不到项：LLM / 强制路径常传 orderId 而非 orderItemId
-            # LLM 或 force 路径经常只给 orderId，此处尝试按订单号兜底
-            order_id = extract_order_id(normalized) or normalized  # 解析不出项 ID 则当订单号处理
-            refundable = await order_service.list_refundable_items(user_id, order_id)  # 列出该订单下可退款项
-            if len(refundable) == 1:  # 仅一项可退：自动选中（减少用户歧义）
-                item = refundable[0]
-                normalized = str(item.get("order_item_id") or "")
-            elif len(refundable) > 1:  # 多项可退：要求用户明确指定 orderItemId
-                lines = []  # 收集提示行
-                for row in refundable[:8]:  # 最多展示 8 个候选
-                    oid = row.get("order_item_id")
-                    name = row.get("product_name") or "商品"
-                    lines.append(f"- {name}（订单项ID：{oid}）")
-                return (
-                    "【退款失败】该订单有多个可退款商品，请指定其中一个订单项ID后再试：\n"
-                    + "\n".join(lines)  # join 多行提示（类似 String.join("\n", lines)）
-                )
-            else:  # 无可退项：区分「订单不存在」vs「状态不允许」
-                order = await order_service.get_order(order_id)
-                if order and order.get("user_id") == user_id:  # 订单存在且归属正确
-                    st = order.get("order_status")
-                    return (
-                        f"【退款失败】订单存在，但当前状态为{_status_name(st)}，"
-                        "仅待发货/已发货/部分退款订单可申请退款。"
-                        "若订单项ID形如「订单号_1」，请使用完整订单项ID重试。"
-                    )
-                return (
-                    "【退款失败】订单项不存在，请确认订单项ID是否正确"
-                    "（格式一般为：订单号_1）。"
-                )
-        order_item_id = normalized  # 统一使用规范化后的 ID
-        if not item or not order_item_id:  # 二次防御：仍无有效项
-            return "【退款失败】订单项不存在，请确认订单项ID是否正确（格式一般为：订单号_1）。"
-        order = await order_service.get_order(item["order_id"])  # 加载所属订单
-        if not order or order["user_id"] != user_id:  # 权限校验
-            return "【退款失败】您没有权限操作此订单项"
-        st = order.get("order_status")
-        if st not in REFUNDABLE_ORDER_STATUSES:  # 订单状态不允许退款
-            return (
-                f"【退款失败】当前订单状态为{_status_name(st)}，"
-                "仅待发货/已发货/部分退款订单可申请退款"
-            )
-        if item.get("order_item_status") != ORDER_ITEM_STATUS_NORMAL:  # 订单项已退或异常
-            return "【退款失败】当前订单项已退款，无法重复申请"
-        params = {  # pending 参数：退款金额、商品快照等（confirm 后传给 Java）
-            "orderItemId": order_item_id,
-            "orderId": item["order_id"],
-            "refundAmount": float(item["item_amount"]),
-            "payScene": order.get("pay_scene"),
-            "orderItems": [{  # 单元素 List，结构与确认收货卡片一致
-                "orderItemId": order_item_id,
-                "productName": item.get("product_name"),
-                "cover": (item.get("cover") or "").split(",")[0] or None,
-                "propertyInfo": item.get("property_info"),
-                "itemAmount": float(item["item_amount"]),
-                "buyCount": item.get("buy_count"),
-            }],
-        }
-        name = item.get("product_name") or "商品"
-        pending = await pending_action_service.create_pending(  # 写入 Redis，生成 act_xxx
-            "REFUND",
-            user_id,
-            params,
-            f"退款：订单项 {order_item_id}（{name}），金额 {item['item_amount']} 元",
-        )
-        return _propose_reply("退款", pending)  # 引导 LLM 在回复末尾附带 token
-    except Exception as e:
-        return f"【退款失败】系统处理异常，请稍后重试或联系客服。错误信息：请稍后重试或联系客服"
+async def propose_refund(user_id: str, order_item_id: str,
+                         request_type: str | None = None, reason: str | None = None) -> str:
+    """Compatibility alias for the existing after-sale application proposal."""
+    if request_type not in ("refund", "return_refund") or not reason or not reason.strip():
+        return ("退款需提交售后申请并由人工审核。请提供本人订单项ID、退款或退货退款类型，"
+                "以及“原因：具体原因”；核验后生成确认卡，确认只提交申请，不直接执行退款。")
+    from app.services.after_sale_service import propose
+    result = await propose(user_id, order_item_id, request_type, reason)
+    return result.to_wire()
 
 
 async def propose_product_review(user_id: str, order_id: str, content: str, star: int) -> str:

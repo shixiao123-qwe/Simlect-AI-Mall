@@ -6,7 +6,7 @@ def rrf_merge(keyword_ids: list[str], vector_ids: list[str], limit: int) -> list
 
     def accumulate(ranked: list[str]) -> None:
 
-        for i, pid in enumerate(ranked):
+        for i, pid in enumerate(dict.fromkeys(ranked)):
             if not pid:
                 continue
 
@@ -17,4 +17,4 @@ def rrf_merge(keyword_ids: list[str], vector_ids: list[str], limit: int) -> list
 
     sorted_ids = sorted(scores.items(), key=lambda x: (-x[1], x[0]))
 
-    return [pid for pid, _ in sorted_ids[: max(limit, 1)]]
+    return [pid for pid, _ in sorted_ids[: max(limit, 0)]]

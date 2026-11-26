@@ -16,7 +16,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.io.IOException;
 
@@ -34,14 +33,9 @@ public class RabbitMQOrderDeadListListenerComponent {
     private MqListenerHelper mqListenerHelper;
 
     @RabbitListener(queues = RabbitMQConfig.RUSHING_DEAD_QUEUE, ackMode = "MANUAL")
-    @Transactional(rollbackFor = Exception.class)
     public void handleDeadOrder(RushingCouponMessageDTO message, Channel channel, Message mqMessage) throws IOException {
-        Long deliveryTag = mqMessage.getMessageProperties().getDeliveryTag();
-        if (!mqListenerHelper.tryBeginConsume(mqMessage, MqListenerHelper.CONSUME_IDEMPOTENCY_TTL_STANDARD_SECONDS)) {
-            channel.basicAck(deliveryTag, false);
-            return;
-        }
-        try {
+        mqListenerHelper.consumeInbox(RabbitMQConfig.RUSHING_DEAD_QUEUE,"COUPON_RESERVATION_TIMEOUT",mqMessage,channel,message,() -> {
+            if (message==null) throw new MqConsumerIdempotencyHelper.InvalidEventException("抢购消息缺失");
             String userCouponId = message.getUserCouponId();
             String userId = message.getUserId();
             String couponId = message.getCouponId();
@@ -58,14 +52,12 @@ public class RabbitMQOrderDeadListListenerComponent {
                     log.warn("抢购预占超时未建单，回补库存: couponId={}, userId={}", couponId, userId);
                     discountCouponService.releaseRushCouponReserve(couponId, userId);
                 }
-                channel.basicAck(deliveryTag, false);
                 return;
             }
 
             if (userCoupon == null && orderInfo == null) {
                 log.warn("建单未落库，仅回滚 Redis 预占: {}", userCouponId);
                 discountCouponService.releaseRushRedisReserve(couponId, userId);
-                channel.basicAck(deliveryTag, false);
                 return;
             }
 
@@ -79,12 +71,6 @@ public class RabbitMQOrderDeadListListenerComponent {
                 discountCouponService.releaseRushRedisReserve(couponId, userId);
             }
 
-            mqListenerHelper.clearConsumeRetry(RabbitMQConfig.RUSHING_DEAD_QUEUE, mqMessage);
-            channel.basicAck(deliveryTag, false);
-        } catch (Exception e) {
-            log.error("抢购死信处理失败", e);
-            mqListenerHelper.nackWithRetryOrDlq(channel, deliveryTag, mqMessage,
-                    RabbitMQConfig.RUSHING_DEAD_QUEUE, message, e);
-        }
+        });
     }
 }

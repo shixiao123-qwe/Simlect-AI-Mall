@@ -69,6 +69,9 @@ import java.util.stream.Collectors;
 @Service("orderInfoService")
 @Slf4j
 public class OrderInfoServiceImpl implements OrderInfoService {
+    @Resource
+    private com.simlect.mappers.AfterSaleMapper afterSaleMapper;
+
 
 	@Resource
 	private OrderInfoMapper<OrderInfo, OrderInfoQuery> orderInfoMapper;
@@ -1000,6 +1003,9 @@ public class OrderInfoServiceImpl implements OrderInfoService {
 		if (payOrderNotifyDTO == null || StringTools.isEmpty(payOrderNotifyDTO.getPayOrderId())) {
 			throw new BusinessException("支付订单号无效");
 		}
+        if (payOrderNotifyDTO.getPayOrderId().isBlank() || payOrderNotifyDTO.getChannelOrderId() == null
+                || payOrderNotifyDTO.getChannelOrderId().isBlank())
+            throw new BusinessException("支付订单关联信息无效");
 		String payOrderId = payOrderNotifyDTO.getPayOrderId();
 		redisComponent.runWithPayOrderLifecycleLock(payOrderId,
 				() -> paySuccessInLock(payOrderNotifyDTO));
@@ -1011,7 +1017,7 @@ public class OrderInfoServiceImpl implements OrderInfoService {
 		if (orderInfoList.isEmpty()) {
 			throw new BusinessException("订单不存在");
 		}
-		// 回调金额校验：渠道实付不得低于订单合计实付（容 0.01 分差）；校验失败拒绝入账
+		// 入账和冲突退款前严格核验金额及订单关联；重复回调也不能绕过校验
 		assertCallbackAmountMatches(payOrderNotifyDTO, orderInfoList);
 		if (orderInfoList.stream().anyMatch(this::isCouponRushOrder)) {
 			paySuccessForCouponRush(orderInfoList, payOrderNotifyDTO);
@@ -1260,27 +1266,26 @@ public class OrderInfoServiceImpl implements OrderInfoService {
 		return orderInfoMapper.selectList(query);
 	}
 
-	/**
-	 * 支付回调金额校验：渠道实付金额不得低于订单合计实付（允许 0.01 分差）。
-	 * 回调未携带金额（totalAmount 为 null）时不阻塞（兼容轮询查单等场景），
-	 * 但携带时校验失败必须拒绝入账。
-	 */
-	private void assertCallbackAmountMatches(PayOrderNotifyDTO notifyDTO, List<OrderInfo> orderInfoList) {
-		BigDecimal callbackAmount = notifyDTO.getTotalAmount();
-		if (callbackAmount == null) {
-			log.info("支付回调未携带金额，跳过金额校验 payOrderId={}", notifyDTO.getPayOrderId());
-			return;
-		}
-		BigDecimal expected = orderInfoList.stream()
-				.map(o -> o.getAmount() == null ? BigDecimal.ZERO : o.getAmount())
-				.reduce(BigDecimal.ZERO, BigDecimal::add);
-		// 实付不低于应支付金额（允许向上浮动或 0.01 分差）
-		if (callbackAmount.add(new BigDecimal("0.01")).compareTo(expected) < 0) {
-			log.error("支付回调金额与订单不符 payOrderId={}, 回调金额={}, 订单实付={}",
-					notifyDTO.getPayOrderId(), callbackAmount, expected);
-			throw new BusinessException("支付金额与订单不符");
-		}
-	}
+    /** Both verified callbacks and SDK query results must match the amount actually charged. */
+    private void assertCallbackAmountMatches(PayOrderNotifyDTO notifyDTO, List<OrderInfo> orderInfoList) {
+        BigDecimal callbackAmount = notifyDTO.getTotalAmount();
+        if (callbackAmount == null || callbackAmount.signum() <= 0 || callbackAmount.scale() > 2)
+            throw new BusinessException("支付金额缺失或精度无效");
+        BigDecimal total = BigDecimal.ZERO;
+        for (OrderInfo order : orderInfoList) {
+            if (order == null || !Objects.equals(order.getPayOrderId(), notifyDTO.getPayOrderId())
+                    || order.getAmount() == null || order.getAmount().signum() < 0 || order.getAmount().scale() > 2)
+                throw new BusinessException("支付订单关联或应付金额异常");
+            if (!StringTools.isEmpty(order.getChannelOrderId())
+                    && !Objects.equals(order.getChannelOrderId(), notifyDTO.getChannelOrderId()))
+                throw new BusinessException("支付渠道交易号与订单不符");
+            total = total.add(order.getAmount());
+        }
+        // Reuse the same minimum-charge rule used by getPayUrl/local demo; do not round a callback.
+        BigDecimal expected = OrderPayAmountUtil.normalizeChannelPayAmount(total);
+        if (callbackAmount.compareTo(expected) != 0)
+            throw new BusinessException("支付金额与订单不符");
+    }
 
 	private boolean isClosedOrCancelled(Integer status) {
 		return OrderStatusEnum.CLOSED.getStatus().equals(status)
@@ -1315,6 +1320,7 @@ public class OrderInfoServiceImpl implements OrderInfoService {
 		if (latest.isEmpty()) {
 			throw new BusinessException("订单不存在");
 		}
+        assertCallbackAmountMatches(payOrderNotifyDTO, latest);
 		if (latest.stream().allMatch(o -> isPaidOrBeyond(o.getOrderStatus())
 				|| OrderStatusEnum.COMPLETED.getStatus().equals(o.getOrderStatus()))) {
 			log.info("paySuccess 幂等跳过 payOrderId={}", payOrderId);
@@ -1448,31 +1454,53 @@ public class OrderInfoServiceImpl implements OrderInfoService {
 			throw new BusinessException("订单不存在");
 		}
 		redisComponent.runWithPayOrderLifecycleLock(orderInfo.getPayOrderId(),
-				() -> refundInLock(orderItem, userId));
+				() -> refundInLock(orderItem, userId, false, true));
 	}
 
-	private void refundInLock(OrderItem orderItem, String userId) {
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void refundAfterSale(OrderItem orderItem, String userId, boolean restockable) {
+        if (orderItem == null) throw new BusinessException("订单项不存在");
+        OrderInfo order = orderInfoMapper.selectByOrderId(orderItem.getOrderId());
+        if (order == null || !Objects.equals(order.getUserId(), userId)) throw new BusinessException("订单不存在");
+        redisComponent.runWithPayOrderLifecycleLock(order.getPayOrderId(),
+                () -> refundInLock(orderItem, userId, true, restockable));
+    }
+
+    private void refundInLock(OrderItem orderItem, String userId, boolean reviewed, boolean restockable) {
 		String orderId = orderItem.getOrderId();
-		OrderInfoQuery query = new OrderInfoQuery();
-		query.setOrderId(orderId);
-		query.setQueryItems(true);
-		List<OrderInfo> orderInfoList = orderInfoMapper.selectList(query);
-		if (orderInfoList == null || orderInfoList.isEmpty()) {
-			throw new BusinessException("订单不存在");
-		}
-		OrderInfo orderInfo = orderInfoList.get(0);
-		if (orderItem == null || !orderInfo.getUserId().equals(userId)) {
-			throw new BusinessException("订单不存在");
-		}
-		// 只有订单状态为1:已付款,待发货，2:已发货，7:部分退款才可申请退款
-		if (orderInfo.getOrderStatus() != OrderStatusEnum.PAID.getStatus()
-				&& orderInfo.getOrderStatus() != OrderStatusEnum.SHIPPED.getStatus()
-				&& orderInfo.getOrderStatus() != OrderStatusEnum.PARTIALLY_REFUNDED.getStatus()
-				) {
-			throw new BusinessException("当前订单状态不能申请退款");
-		}
+        // The application path takes the same order -> item locks. Keep them until commit.
+        OrderInfo lockedOrder = afterSaleMapper.lockOrder(orderId);
+        OrderItem lockedItem = afterSaleMapper.lockItem(orderItem.getOrderItemId());
+        if (lockedOrder == null || lockedItem == null
+                || !Objects.equals(lockedOrder.getUserId(), userId)
+                || !Objects.equals(lockedItem.getOrderId(), orderId)) {
+            throw new BusinessException("订单项不存在或无权访问");
+        }
+        OrderInfo orderInfo = orderInfoMapper.selectForRefundByOrderId(orderId);
+        if (orderInfo == null || !Objects.equals(orderInfo.getUserId(), userId)
+                || orderInfo.getOrderItemList() == null) {
+            throw new BusinessException("订单不存在");
+        }
+        String itemId = orderItem.getOrderItemId();
+        orderItem = orderInfo.getOrderItemList().stream()
+                .filter(item -> Objects.equals(item.getOrderItemId(), itemId))
+                .findFirst().orElseThrow(() -> new BusinessException("订单项不存在或无权访问"));
+        if (!reviewed) {
+            if (afterSaleMapper.activeForUpdate(itemId) != null) {
+                throw new BusinessException("该订单项已有处理中售后申请，请到我的售后申请继续处理");
+            }
+            Integer logisticsStatus = orderInfoMapper.selectRefundLogisticsStatus(orderId);
+            if (!com.simlect.biz.AfterSaleWorkflowService.allowsQuickRefund(orderInfo.getOrderStatus(), logisticsStatus)) {
+                throw new BusinessException("仅未发货订单支持快捷退款，已发货订单请提交售后申请并完成审核及验货");
+            }
+        } else if (!Set.of(OrderStatusEnum.PAID.getStatus(), OrderStatusEnum.SHIPPED.getStatus(),
+                OrderStatusEnum.PARTIALLY_REFUNDED.getStatus(), OrderStatusEnum.COMPLETED.getStatus())
+                .contains(orderInfo.getOrderStatus() == null ? -1 : orderInfo.getOrderStatus())) {
+            throw new BusinessException("当前订单状态不能申请退款");
+        }
 		// 判断订单项状态为1正常才可退款
-		if (orderItem.getOrderItemStatus() != OrderItemStatusEnum.NORMAL.getStatus()) {
+		if (!Objects.equals(orderItem.getOrderItemStatus(), OrderItemStatusEnum.NORMAL.getStatus())) {
 			throw new BusinessException("当前订单项状态不能申请退款");
 		}
 		// 退款幂等闸：同一订单项仅执行一次退款（防止并发/重复提交重复退款）
@@ -1493,10 +1521,10 @@ public class OrderInfoServiceImpl implements OrderInfoService {
 						}
 					});
 		}
-		doRefund(orderInfo, orderItem);
+		doRefund(orderInfo, orderItem, reviewed, restockable);
 	}
 
-	private void doRefund(OrderInfo orderInfo, OrderItem orderItem) {
+	private void doRefund(OrderInfo orderInfo, OrderItem orderItem, boolean reviewed, boolean restockable) {
 		// 判断当前退款项是不是该订单的全部商品；获取当前订单下状态正常的订单项数量
 		int normalCount = 0;
 		List<OrderItem> orderItemList = orderInfo.getOrderItemList();
@@ -1532,8 +1560,9 @@ public class OrderInfoServiceImpl implements OrderInfoService {
 			throw new BusinessException("当前订单项状态不能申请退款");
 		}
 		// 订单状态：全部退则已退款，否则部分退款（乐观锁：仅当订单仍处于原状态）
-		OrderStateEvent refundEvent = normalCount == 1
-				? OrderStateEvent.FULL_REFUND : OrderStateEvent.PARTIAL_REFUND;
+		OrderStateEvent refundEvent = reviewed
+                ? (normalCount == 1 ? OrderStateEvent.AFTER_SALE_FULL_REFUND : OrderStateEvent.AFTER_SALE_PARTIAL_REFUND)
+                : (normalCount == 1 ? OrderStateEvent.FULL_REFUND : OrderStateEvent.PARTIAL_REFUND);
 		OrderStatusEnum currentStatus = OrderStatusEnum.getByStatus(orderInfo.getOrderStatus());
 		Integer orderRows = orderStateMachine.transition(
 				orderInfo.getOrderId(), currentStatus, refundEvent);
@@ -1545,6 +1574,10 @@ public class OrderInfoServiceImpl implements OrderInfoService {
 		PayChannelEnum refundChannel = PayChannelEnum.resolve(orderInfo.getPayChannel());
 		payFeignSupport.refund(sourcePayOrderId, refundOrderId, amount4Refund,
 				refundChannel == null ? null : refundChannel.getPayScene());
+        if (!restockable) {
+            log.info("售后退款完成，退货不适合重新销售，保持隔离 orderItemId={}", orderItem.getOrderItemId());
+            return;
+        }
 		// 退款成功后回补库存：移入事务提交后（afterCommit）执行——
 		// 防「远端回补成功但本地事务回滚 → 用户重试 → 重复回补库存虚增」；
 		// 失败仍记远程补偿，不影响已提交的退款

@@ -32,6 +32,7 @@ tool_guard、mcp_streamable_client、mcp_tools_service、nodes.tools_node
 from __future__ import annotations  # import：延迟解析类型注解，允许在类定义前引用尚未定义的类型（类似 Java 泛型前向引用）
 
 import structlog  # import：结构化日志库，输出 JSON 风格 key-value 日志，类比 SLF4J + MDC
+from dataclasses import replace
 
 from app.harness.guardrails.tool_guard import ToolGuardrail  # import：工具调用护栏 — 白名单校验 + 参数合法性检查
 from app.harness.metrics.runtime_sensors import TOOL_CALL_TOTAL  # import：Prometheus Counter 指标 — 按 tool/status 维度计数
@@ -54,30 +55,50 @@ class McpToolRouter:  # MCP 工具路由器 — 门面类，类比 Java @Service
     ) -> ToolInvokeResult:  # 返回统一结果 DTO，含 content 文本 + 可选 assistant_cards 卡片
 
         if not tool_guard.is_allowed(tool_name):  # 白名单检查：工具名不在允许列表则直接拒绝
-            TOOL_CALL_TOTAL.labels(tool=tool_name, status="denied").inc()  # Prometheus：记录一次「拒绝」计数
-            return ToolInvokeResult(content=f"未知工具: {tool_name}")  # 返回友好错误文案，不抛异常打断对话流
+            TOOL_CALL_TOTAL.labels(tool="unknown", status="denied").inc()
+            return ToolInvokeResult.failure("未知工具，请重新说明需求", "TOOL_DENIED", status="denied")
+
+        if args is not None and not isinstance(args, dict):
+            TOOL_CALL_TOTAL.labels(tool=tool_name, status="invalid_args").inc()
+            return ToolInvokeResult.failure("【操作失败】参数格式不正确", "INVALID_ARGUMENTS", status="invalid_args")
 
         raw = dict(args or {})  # 浅拷贝参数 Map — dict(args) 新建对象，避免修改调用方原始 dict
         raw["userId"] = user_id  # 强制覆盖 userId — 防止 LLM 伪造他人 ID 做越权操作
 
         if not tool_guard.validate_tool_args(tool_name, raw, user_id):  # 校验必填字段、类型、用户身份一致性
             TOOL_CALL_TOTAL.labels(tool=tool_name, status="invalid_args").inc()  # 指标：参数校验未通过
-            return ToolInvokeResult(content="【操作失败】用户身份校验未通过")  # 返回校验失败提示给前端
+            return ToolInvokeResult.failure("【操作失败】用户身份校验未通过", "INVALID_ARGUMENTS", status="invalid_args")
 
         try:  # try-except 包裹远程调用 — 网络/MCP 异常在此捕获，不向上抛给 LangGraph
+            if tool_name == "COMPARE_PRODUCTS":
+                from app.memory.session_memory_service import session_memory_service
+                from app.services.redis_service import redis_service
+                memory = await session_memory_service.load(user_id, redis_service.client)
+                selected = raw.get("productIds") or []
+                shown = memory.state.get("shoppingResults") or []
+                if not selected or any(pid not in shown for pid in selected):
+                    TOOL_CALL_TOTAL.labels(tool=tool_name, status="invalid_args").inc()
+                    return ToolInvokeResult.failure("只能对比当前展示的商品，请重新选择。", "INVALID_ARGUMENTS", status="invalid_args")
+                # Do not trust a model-supplied SKU or old requirements snapshot.
+                raw["skuHashes"] = memory.state.get("shoppingShownSkus") or {}
+                raw["requirements"] = memory.state.get("shoppingRequirement") or {}
             mcp_args = self._to_mcp_args(tool_name, raw)  # 把 Python 侧 snake_case 键转为 MCP schema 期望的 camelCase
             text = await mcp_streamable_client.call_tool(tool_name, mcp_args)  # 异步 HTTP 调 MCP 进程 :7060，返回 Wire 字符串
-            TOOL_CALL_TOTAL.labels(tool=tool_name, status="success").inc()  # 指标：远程调用成功
-            result = parse_tool_wire(text)  # 解析 Wire 字符串 → ToolInvokeResult（可能含卡片 JSON）
-            return await self._backfill_structured(tool_name, mcp_args, result)  # 必要时用本地逻辑回填/覆盖卡片
+            result = parse_tool_wire(text)
+            if result.status in {"success", "legacy"}:
+                result = await self._backfill_structured(tool_name, mcp_args, result)
+            # Transport completion is not business success. Use bounded labels.
+            metric_status = "degraded" if result.status == "success" and result.degraded else result.status
+            TOOL_CALL_TOTAL.labels(tool=tool_name, status=metric_status).inc()
+            return result
         except TypeError as e:  # 参数类型不匹配 — 如 MCP handler 缺必填参数导致 TypeError
-            logger.warning("mcp_tool_bad_args", tool=tool_name, error=str(e))  # 结构化 warning 日志，便于排查
+            logger.warning("mcp_tool_bad_args", tool=tool_name, error_type=type(e).__name__)
             TOOL_CALL_TOTAL.labels(tool=tool_name, status="bad_args").inc()  # 指标：参数类型/结构错误
-            return ToolInvokeResult(content="【操作失败】参数不完整")  # 用户可读的错误文案
+            return ToolInvokeResult.failure("【操作失败】参数不完整", "INVALID_ARGUMENTS", status="invalid_args")
         except Exception as e:  # 兜底：网络超时、MCP 500、JSON 解析失败等未预期异常
-            logger.exception("mcp_tool_failed", tool=tool_name, error=str(e))  # exception 级别会附带完整堆栈
+            logger.warning("mcp_tool_failed", tool=tool_name, error_type=type(e).__name__)
             TOOL_CALL_TOTAL.labels(tool=tool_name, status="error").inc()  # 指标：系统级错误
-            return ToolInvokeResult(content="【操作失败】系统处理异常，请稍后重试")  # 通用失败文案，不暴露内部细节
+            return ToolInvokeResult.failure("【操作失败】系统处理异常，请稍后重试", "INTERNAL_ERROR")
 
     async def _backfill_structured(
         self,
@@ -103,7 +124,7 @@ class McpToolRouter:  # MCP 工具路由器 — 门面类，类比 Java @Service
                         mcp_preview=(result.content or "")[:80],  # MCP 返回文本前 80 字符预览
                         local_preview=(local.content or "")[:80],  # 本地文本前 80 字符预览
                     )
-                return local  # 以本地结果为准 — 卡片字段通常比旧版 MCP 更完整
+                return replace(local, status="legacy", legacy=True) if local.status == "success" else local
             return result  # 本地无有效结果 — 降级保留 MCP 远程返回值
 
         if result.assistant_cards or result.biz_type:  # MCP 结果已含结构化卡片或 biz_type 标识
@@ -120,7 +141,7 @@ class McpToolRouter:  # MCP 工具路由器 — 门面类，类比 Java @Service
         )
         if local.assistant_cards or local.biz_type:  # 本地成功生成卡片或 biz_type
             logger.info("query_orders_cards_backfilled")  # 记录订单卡片回填事件
-            return local  # 返回本地完整结果（含卡片）
+            return replace(local, status="legacy", legacy=True) if local.status == "success" else local
         return result  # 本地也无卡片 — 保留 MCP 原始结果
 
     def _to_mcp_args(self, tool_name: str, args: dict) -> dict:  # 私有方法：参数键名 snake_case → camelCase 映射
@@ -130,6 +151,22 @@ class McpToolRouter:  # MCP 工具路由器 — 门面类，类比 Java @Service
         # lambda 辅助函数 g：按 keys 顺序取 args 中第一个存在且非 None 的值 — 兼容 snake/camel 两种键名
         g = lambda *keys: next((args[k] for k in keys if k in args and args[k] is not None), None)
         uid = g("userId", "user_id")  # 用户 ID — 优先 camelCase，回退 snake_case
+        if tool_name == "QUERY_AFTER_SALE_REQUESTS":
+            return {"userId":uid}
+        if tool_name == "GET_ORDER_DETAIL":
+            return {"userId":uid,"orderId":g("orderId","order_id")}
+        if tool_name == "QUERY_AFTER_SALE_POLICY":
+            return {"userId":uid,"question":g("question") or ""}
+        if tool_name in ("CHECK_AFTER_SALE_ELIGIBILITY","CREATE_AFTER_SALE_REQUEST"):
+            out={"userId":uid,"orderItemId":g("orderItemId","order_item_id"),"type":g("type")}
+            if tool_name == "CREATE_AFTER_SALE_REQUEST":
+                out["reason"]=g("reason") or ""
+            return out
+        if tool_name == "RECOMMEND_PRODUCTS":
+            return {"userId":uid,"requirements":g("requirements") or {}}
+        if tool_name == "COMPARE_PRODUCTS":
+            return {"userId":uid,"productIds":g("productIds") or [],"preferences":g("preferences") or [],
+                    "requirements":g("requirements") or {},"skuHashes":g("skuHashes") or {}}
 
         if tool_name == "SEARCH_PRODUCTS":  # 商品搜索工具参数映射
             out = {"userId": uid, "keyword": g("keyword") or ""}  # 构造 camelCase 请求体 — keyword 默认空串
@@ -159,7 +196,8 @@ class McpToolRouter:  # MCP 工具路由器 — 门面类，类比 Java @Service
             return out
 
         if tool_name == "PROPOSE_REFUND":  # 退款提案 — 需要 orderItemId（订单项 ID）
-            return {"userId": uid, "orderItemId": g("orderItemId", "order_item_id")}
+            return {"userId": uid, "orderItemId": g("orderItemId", "order_item_id"),
+                    "type": g("type"), "reason": g("reason")}
 
         if tool_name == "PROPOSE_PRODUCT_REVIEW":  # 评价提案 — 四个字段
             return {

@@ -20,6 +20,7 @@ import com.simlect.biz.EmailService;
 import com.simlect.utils.StringTools;
 // 导入Spring的@Value注解，用于从配置文件读取属性值
 import lombok.extern.slf4j.Slf4j;
+import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.annotation.Value;
 // 导入Spring的@Service注解，将该类标记为Spring管理的服务层组件
 import org.springframework.stereotype.Service;
@@ -29,6 +30,22 @@ import org.springframework.stereotype.Service;
 @Slf4j
 // 定义类名为AliEmailServiceImpl，实现EmailService接口
 public class AliEmailServiceImpl implements EmailService {
+
+    @Value("${simlect.mail.local-mock-enabled:false}")
+    private boolean localMockEnabled;
+
+    @Value("${simlect.production-ready:false}")
+    private boolean productionReady;
+
+    @PostConstruct
+    public void validateConfiguration() {
+        if (localMockEnabled && productionReady) {
+            throw new IllegalStateException("生产模式禁止开启 SIMLECT_MAIL_LOCAL_MOCK_ENABLED");
+        }
+        if (localMockEnabled) {
+            log.warn("本地邮件演示模式已开启：验证码仅输出至 User 服务控制台，不发送真实邮件");
+        }
+    }
 
     // 使用@Value注解从配置文件中读取阿里云AccessKey ID，注入到该字段
     @Value("${aliyun.access-key-id:}")
@@ -58,8 +75,17 @@ public class AliEmailServiceImpl implements EmailService {
     @Override
     // 方法定义：发送验证码邮件，参数toEmail为接收邮箱地址，返回生成的验证码字符串
     public String sendVerificationCode(String toEmail) {
+        if (localMockEnabled && productionReady) {
+            throw new IllegalStateException("生产模式禁止开启 SIMLECT_MAIL_LOCAL_MOCK_ENABLED");
+        }
         // 第1步：生成6位随机数字验证码（调用自定义工具类方法）
         String verificationCode = StringTools.getRandomNumber(6);
+
+        if (localMockEnabled) {
+            log.info("[本地邮件演示] 收件邮箱={} 验证码={} 有效期5分钟（未发送真实邮件）",
+                    toEmail, verificationCode);
+            return verificationCode;
+        }
 
         // 第2步：设置邮件内容（这里使用简单的纯文本格式）
         String emailSubject = "【简选Simlect】邮箱验证码"; // 邮件主题

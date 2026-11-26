@@ -419,6 +419,8 @@ async def finalize_agent_response(
     user_text: str | None = None,  # 用户输入原文
     consult_card: dict | None = None,  # 咨询商品卡 Map
     message_card: dict | None = None,  # 消息附带卡片 Map
+    shopping_handled: bool = False,
+    after_sale_handled: bool = False,
 ) -> str | None:
     """
     流式 LLM 回合结束后的核心编排：解析 confirm token、选择 UI 类型、落库并 push_done。
@@ -434,6 +436,24 @@ async def finalize_agent_response(
     user_id = agent_msg["userId"]  # 从 agent_msg Map 取 userId
     message_id = agent_msg["messageId"]  # 取 messageId
     full_text = "".join(chunks)  # 拼接流式 chunk 为完整 LLM 文本（类似 StringBuilder.toString()）
+    if after_sale_handled:
+        # Preserve server-generated confirm cards; never add shopping recommendations.
+        resolved=await resolve_action_confirm(full_text,messages,user_id)
+        if resolved:
+            assistant,biz_data,biz_type=resolved
+        else:
+            assistant=assistant_cards or full_text
+        await stream_service.push_done(user_id,message_id,assistant,biz_type or "agent",agent_msg.get("userMessage"))
+        await agent_message_service.complete_message(message_id,assistant,biz_type or "agent",biz_data)
+        return None
+    if shopping_handled:
+        # Strict recommendations/comparisons must never enter ordinary hot-sale backfill.
+        cards = assistant_cards if assistant_cards and is_product_cards_json(assistant_cards) else None
+        assistant = json.dumps({"type":"PRODUCT_SEARCH_RESULT","intro":full_text,
+                                "products":json.loads(cards)},ensure_ascii=False) if cards else full_text
+        await stream_service.push_done(user_id,message_id,assistant,biz_type or "agent",agent_msg.get("userMessage"))
+        await agent_message_service.complete_message(message_id,assistant,biz_type or "agent",biz_data)
+        return cards
     is_consult_turn = is_product_consult_turn(  # 判断是否商品咨询回合（来自商品页 + 特定 messageCard）
         user_text,
         message_card,

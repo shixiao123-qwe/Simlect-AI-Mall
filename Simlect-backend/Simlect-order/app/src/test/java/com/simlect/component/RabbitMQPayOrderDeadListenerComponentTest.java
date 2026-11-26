@@ -8,7 +8,7 @@ import com.simlect.biz.OrderInfoService;
 import com.simlect.biz.OrderLogisticsInfoRecordService;
 import com.simlect.biz.OrderLogisticsInfoService;
 import com.simlect.constants.RabbitMQConfig;
-import com.simlect.constants.ReliableMessageSender;
+import com.simlect.constants.TransactionalMqSender;
 import com.simlect.entity.config.AppConfig;
 import com.simlect.entity.po.OrderInfo;
 import com.simlect.entity.po.OrderLogisticsInfo;
@@ -52,6 +52,27 @@ import static org.mockito.Mockito.when;
 @MockitoSettings(strictness = Strictness.LENIENT)
 class RabbitMQPayOrderDeadListenerComponentTest {
 
+    private boolean inboxDone;
+    @org.junit.jupiter.api.BeforeEach
+    void wireInboxRunnerMock() {
+        // This fixture models a committed Inbox outcome. Common and container tests verify real transactions.
+        org.mockito.Mockito.doAnswer(call -> {
+            String queue = call.getArgument(0);
+            Message message = call.getArgument(2);
+            Channel channel = call.getArgument(3);
+            Object payload = call.getArgument(4);
+            if (inboxDone) { channel.basicAck(message.getMessageProperties().getDeliveryTag(), false); return null; }
+            try {
+                call.<Runnable>getArgument(5).run();
+                channel.basicAck(message.getMessageProperties().getDeliveryTag(), false);
+            } catch (Exception failure) {
+                mqListenerHelper.nackWithRetryOrDlq(channel,message.getMessageProperties().getDeliveryTag(),message,queue,payload,failure);
+            }
+            return null;
+        }).when(mqListenerHelper).consumeInbox(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
+    }
+
     private static final String ORDER_ID = "O1";
 
     @Mock
@@ -61,7 +82,7 @@ class RabbitMQPayOrderDeadListenerComponentTest {
     @Mock
     private OrderLogisticsInfoRecordService orderLogisticsInfoRecordService;
     @Mock
-    private ReliableMessageSender reliableMessageSender;
+    private TransactionalMqSender transactionalMqSender;
     @Mock
     private AppConfig appConfig;
     @Mock
@@ -89,7 +110,7 @@ class RabbitMQPayOrderDeadListenerComponentTest {
     @BeforeEach
     void setUp() {
         when(appConfig.getLogisticsSimulateMaxStations()).thenReturn(5);
-        when(mqListenerHelper.tryBeginConsume(any(), anyLong())).thenReturn(true);
+        inboxDone = false;
         TransactionSynchronizationManager.initSynchronization();
     }
 
@@ -103,18 +124,20 @@ class RabbitMQPayOrderDeadListenerComponentTest {
     @Test
     void handlePayTimeoutOrder_emptyMessage_acks() throws Exception {
         component.handlePayTimeoutOrder(null, channel, mqMessage(1L));
-        verify(channel).basicAck(1L, false);
+        verify(channel, never()).basicAck(anyLong(), anyBoolean());
+        verify(mqListenerHelper).nackWithRetryOrDlq(any(),anyLong(),any(),anyString(),any(),any(Exception.class));
     }
 
     @Test
     void handlePayTimeoutOrder_emptyOrderId_acks() throws Exception {
         component.handlePayTimeoutOrder(new PayOrderMessageDTO(""), channel, mqMessage(2L));
-        verify(channel).basicAck(2L, false);
+        verify(channel, never()).basicAck(anyLong(), anyBoolean());
+        verify(mqListenerHelper).nackWithRetryOrDlq(any(),anyLong(),any(),anyString(),any(),any(Exception.class));
     }
 
     @Test
     void handlePayTimeoutOrder_idempotent_acks() throws Exception {
-        when(mqListenerHelper.tryBeginConsume(any(), anyLong())).thenReturn(false);
+        inboxDone = true;
         component.handlePayTimeoutOrder(message(ORDER_ID), channel, mqMessage(3L));
         verify(channel).basicAck(3L, false);
         verify(orderInfoService, never()).cancelUnpaidOrderForPayTimeout(anyString());
@@ -124,7 +147,7 @@ class RabbitMQPayOrderDeadListenerComponentTest {
     void handlePayTimeoutOrder_cancelSucceeds_acks() throws Exception {
         when(orderInfoService.cancelUnpaidOrderForPayTimeout(ORDER_ID)).thenReturn(true);
         component.handlePayTimeoutOrder(message(ORDER_ID), channel, mqMessage(4L));
-        verify(mqListenerHelper).clearConsumeRetry(RabbitMQConfig.PAY_TIMEOUT_DEAD_QUEUE, mqMessage(4L));
+        verify(mqListenerHelper).consumeInbox(eq(RabbitMQConfig.PAY_TIMEOUT_DEAD_QUEUE),org.mockito.ArgumentMatchers.anyString(),any(),any(),any(),any());
         verify(channel).basicAck(4L, false);
     }
 
@@ -148,12 +171,13 @@ class RabbitMQPayOrderDeadListenerComponentTest {
     @Test
     void handleConfirmOrder_emptyMessage_acks() throws Exception {
         component.handleConfirmOrder(null, channel, mqMessage(1L));
-        verify(channel).basicAck(1L, false);
+        verify(channel, never()).basicAck(anyLong(), anyBoolean());
+        verify(mqListenerHelper).nackWithRetryOrDlq(any(),anyLong(),any(),anyString(),any(),any(Exception.class));
     }
 
     @Test
     void handleConfirmOrder_idempotent_acks() throws Exception {
-        when(mqListenerHelper.tryBeginConsume(any(), anyLong())).thenReturn(false);
+        inboxDone = true;
         component.handleConfirmOrder(message(ORDER_ID), channel, mqMessage(2L));
         verify(channel).basicAck(2L, false);
     }
@@ -189,12 +213,13 @@ class RabbitMQPayOrderDeadListenerComponentTest {
     @Test
     void handleLogisticsOrder_emptyMessage_acks() throws Exception {
         component.handleLogisticsOrder(null, channel, mqMessage(1L));
-        verify(channel).basicAck(1L, false);
+        verify(channel, never()).basicAck(anyLong(), anyBoolean());
+        verify(mqListenerHelper).nackWithRetryOrDlq(any(),anyLong(),any(),anyString(),any(),any(Exception.class));
     }
 
     @Test
     void handleLogisticsOrder_idempotent_acks() throws Exception {
-        when(mqListenerHelper.tryBeginConsume(any(), anyLong())).thenReturn(false);
+        inboxDone = true;
         component.handleLogisticsOrder(message(ORDER_ID), channel, mqMessage(2L));
         verify(channel).basicAck(2L, false);
     }
@@ -224,7 +249,7 @@ class RabbitMQPayOrderDeadListenerComponentTest {
         verify(orderLogisticsInfoRecordService).add(any(OrderLogisticsInfoRecord.class));
 
         runAfterCommit(10L);
-        verify(reliableMessageSender).sendMessage(eq(RabbitMQConfig.PAY_EXCHANGE),
+        verify(transactionalMqSender).sendAfterCommit(eq(RabbitMQConfig.PAY_EXCHANGE),
                 eq(RabbitMQConfig.PAY_CONFIRM_DELAY_KEY), any(PayOrderMessageDTO.class), anyString(), any());
     }
 
@@ -276,7 +301,8 @@ class RabbitMQPayOrderDeadListenerComponentTest {
 
         PayOrderMessageDTO dto = new PayOrderMessageDTO(ORDER_ID);
         dto.setLogisticsStep(5);
-        component.processOrderLogistics(dto, 13L, channel, mqMessage(13L));
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> component.processOrderLogistics(dto, 13L, channel, mqMessage(13L)));
 
         verify(orderLogisticsInfoRecordService, never()).add(any());
     }
@@ -302,7 +328,7 @@ class RabbitMQPayOrderDeadListenerComponentTest {
         verify(orderLogisticsInfoRecordService).add(any(OrderLogisticsInfoRecord.class));
 
         runAfterCommit(14L);
-        verify(reliableMessageSender).sendMessage(eq(RabbitMQConfig.PAY_EXCHANGE),
+        verify(transactionalMqSender).sendAfterCommit(eq(RabbitMQConfig.PAY_EXCHANGE),
                 eq(RabbitMQConfig.PAY_LOGISTICS_DELAY_KEY), any(PayOrderMessageDTO.class), anyString(), any());
     }
 
@@ -332,7 +358,8 @@ class RabbitMQPayOrderDeadListenerComponentTest {
     void processOrderLogistics_noLogisticsInfo_skips() throws Exception {
         when(orderInfoService.getOrderInfoByOrderId(ORDER_ID)).thenReturn(new OrderInfo());
         when(orderLogisticsInfoService.getOrderLogisticsInfoByOrderId(ORDER_ID)).thenReturn(null);
-        component.processOrderLogistics(message(ORDER_ID), 16L, channel, mqMessage(16L));
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> component.processOrderLogistics(message(ORDER_ID), 16L, channel, mqMessage(16L)));
         verify(orderLogisticsInfoRecordService, never()).add(any());
     }
 

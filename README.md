@@ -1,6 +1,16 @@
-# Simlect
+# 基于 AI Agent 的微服务电商平台
 
-**体验地址：[www.simlect.com](https://www.simlect.com)**
+基于 Spring Cloud、Vue 3、Python FastAPI、LangGraph 与 MCP 的智能电商项目，围绕自然语言选购、真实 SKU 筛选、商品对比及用户确认后的售后申请构建业务流程。展示端使用“选物”短品牌，工程目录与服务标识保留兼容命名。
+
+当前版本的实现与贡献边界见 [个人作品设计说明](docs/interview/19-选物个人作品设计与体验改造.md)，源码学习入口见 [项目原理讲解与追问指南](docs/interview/25-项目原理讲解与追问指南.md)，最近一轮测试与未完成验证见 [可靠性改造报告](docs/interview/24-数据分页与AI工具可靠性改造报告.md)。本地演示采用模拟支付与退款；当前向量检索关闭，不将代码支持的能力等同于已经在线验证的效果。
+
+基础代码来源：[Audreator/Simlect-AI-Mall](https://github.com/Audreator/Simlect-AI-Mall)，原 MIT 许可与版权声明见 [LICENSE.md](LICENSE.md)，完整保留。公开商品资料使用 ABO 的 CC BY 4.0 许可，来源与署名见 data/public-catalog/ATTRIBUTION.md。
+
+---
+
+## 项目概览
+
+原项目演示站：[www.simlect.com](https://www.simlect.com)（属于原作者，不是本版本的部署地址）。本地启动说明见下文与 deploy 目录。
 
 B2C 单商家电商在线平台。面向“只能手动搜商品”的传统体验，把**对话导购、混合搜索与可执行智能客服**融入电商全流程：浏览、咨询、下单、售后均可在对话里完成读操作，写操作经“提案 -> 用户确认 -> Java 执行”闭环，模型不直改业务库。
 
@@ -232,6 +242,8 @@ Agent 通过 **MCP Streamable HTTP**（默认 `:7060/mcp`）调用 10 个工具�
 ## 快速开始
 
 > 建议本机内存 **≥16GB**（全中间件 + 全服务更舒适）。以下以 Windows / PowerShell 为例，Linux/macOS 命令等价。
+
+**Windows 一键启动（含 AI）：** 当前数据库已初始化的本地环境，可先填写 `deploy/.env.local` 中的 DeepSeek 和阿里云百炼密钥，然后运行根目录 `start-local.cmd`。会以低内存参数顺序启动中间件、10 个 Java 服务、Agent、MCP 和两个前端；使用 `stop-local.cmd` 停止。首次切换前请先停止 IDEA 和旧终端中的服务。详见 [本地一键启动说明](deploy/LOCAL_START.md)。
 
 ### 0. 环境要求
 

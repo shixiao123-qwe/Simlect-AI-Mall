@@ -42,7 +42,10 @@ public class ProductController extends ABaseController {
 
     @GetMapping("/loadCategory")
     public ResponseVO loadCategory() {
-        return getSuccessResponseVO(sysCategoryService.findListByParam(new SysCategoryQuery()));
+        SysCategoryQuery query = new SysCategoryQuery();
+        query.setParent(true);
+        query.setPropertyQuery(true);
+        return getSuccessResponseVO(sysCategoryService.findListByParam(query));
     }
 
     @GetMapping("/loadCommendProduct")
@@ -50,7 +53,7 @@ public class ProductController extends ABaseController {
         ProductInfoQuery query = new ProductInfoQuery();
         query.setCommendType(1);
         query.setStatus(1);
-        query.setOrderBy("create_time desc");
+        query.setOrderBy("create_time desc, product_id asc");
         query.setSimplePage(new SimplePage(0, 11));
         return getSuccessResponseVO(productInfoService.findListByPage(query).getList());
     }
@@ -61,14 +64,17 @@ public class ProductController extends ABaseController {
                                   BigDecimal priceFrom,
                                   BigDecimal priceTo,
                                   String sortField,
-                                  String sortType) {
+                                  String sortType,
+                                  Boolean includeRecommended) {
         ProductInfoQuery query = new ProductInfoQuery();
         query.setPageNo(pageNo);
         query.setStatus(com.simlect.api.enums.ProductStatusEnum.ON_SALE.getStatus());
         query.setPriceFrom(priceFrom);
         query.setPriceTo(priceTo);
         query.setOrderBy(buildProductOrderBy(sortField, sortType));
-        if (categoryId == null) {
+        // Keep the legacy omitted-category default; new callers can explicitly browse all.
+        // An empty category string keeps its historical include-all behavior for old clients.
+        if (categoryId == null && !Boolean.TRUE.equals(includeRecommended)) {
             query.setCommendType(0);
             return getSuccessResponseVO(productInfoService.findListByPage(query));
         }
@@ -78,12 +84,12 @@ public class ProductController extends ABaseController {
 
     private String buildProductOrderBy(String sortField, String sortType) {
         if ("price".equals(sortField)) {
-            return "asc".equalsIgnoreCase(sortType) ? "min_price asc, total_sale desc" : "min_price desc, total_sale desc";
+            return "asc".equalsIgnoreCase(sortType) ? "min_price asc, total_sale desc, product_id asc" : "min_price desc, total_sale desc, product_id asc";
         }
         if ("sale".equals(sortField)) {
-            return "total_sale desc, min_price asc";
+            return "total_sale desc, min_price asc, product_id asc";
         }
-        return "commend_type desc, total_sale desc, create_time desc";
+        return "commend_type desc, total_sale desc, create_time desc, product_id asc";
     }
 
     @PostMapping("/getProduct")

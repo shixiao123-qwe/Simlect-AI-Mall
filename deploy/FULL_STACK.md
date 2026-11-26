@@ -1,5 +1,7 @@
 # Simlect 完整版启动（中间件全开 + 微服务全开）
 
+> 当前 Windows 16GB 本地演示请优先使用 [LOCAL_START.md](LOCAL_START.md) 的 `start-local.cmd`，会实际启动 Java、AI Agent、MCP 和前端。下文保留原手动启动参考，旧 `start-full.ps1` 仅启动中间件并打印清单；其中容量估算不能代表当前低内存 Compose 配置。
+
 ## 机器要求（务必看）
 
 

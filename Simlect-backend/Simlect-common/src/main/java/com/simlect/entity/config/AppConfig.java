@@ -73,6 +73,10 @@ public class AppConfig {
     @Value("${alipay.appid:}")
     private String alipayAppid;
 
+    /** Expected receiving merchant. Blank disables acceptance of external Alipay notifications. */
+    @Value("${alipay.sellerId:${ALIPAY_SELLER_ID:}}")
+    private String alipaySellerId;
+
     @Value("${alipay.appCertPath:}")
     private String alipayAppCertPath;
 
@@ -179,6 +183,10 @@ public class AppConfig {
 
     public String getAlipayAppid() {
         return alipayAppid;
+    }
+
+    public String getAlipaySellerId() {
+        return alipaySellerId;
     }
 
     public String getAlipayServerUrl() {

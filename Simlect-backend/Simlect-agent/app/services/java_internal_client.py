@@ -33,13 +33,24 @@ Gateway InternalTokenGlobalFilter、*AgentInternalController、mcp_tools_service
 """
 
 from typing import Any  # import：泛型 Any — 表示任意类型，类似 Java Object
+import time
 
 import httpx  # import：异步 HTTP 客户端库，类比 OkHttp / Spring WebClient 的 async 版
 import structlog  # import：结构化日志 — key-value 格式，便于 ELK 检索
 
 from app.config.settings import get_settings  # import：读取 application 配置 — java_web_url、internal_token 等
+from app.services.internal_http import internal_http_client
+from app.services.request_context import TRACE_HEADER, get_trace_id
 
 logger = structlog.get_logger()  # 获取本模块 logger 实例
+
+
+class JavaInternalBusinessError(ValueError):
+    """Java returned an explicit business denial (not a transport failure)."""
+
+
+class JavaInternalResponseError(ValueError):
+    """Java returned an unreadable or unrecognized response envelope."""
 
 
 def _camel_to_snake(name: str) -> str:  # 私有工具函数：单个 camelCase 标识符 → snake_case
@@ -69,13 +80,14 @@ class JavaInternalClient:  # Java 内部只读 API 客户端 — 类比 @FeignCl
     # ↑ 类 docstring：只调 Gateway 的 /internal/** 路径，不走用户 /api/** 接口
 
     def __init__(self, timeout: float = 30.0):  # 构造器 — timeout 为 HTTP 请求超时秒数，默认 30s
-        self._timeout = timeout  # 私有字段存超时配置 — 每次 post_json 创建 AsyncClient 时使用
+        self._timeout = timeout  # Per request, even when the application shares its bounded pool.
 
     def _headers(self) -> dict[str, str]:  # 构造每次 HTTP 请求的公共 Header Map
         settings = get_settings()  # 读取全局配置单例 — 类似 @Value 注入
         return {
             "X-Internal-Token": settings.internal_token,  # 服务间鉴权令牌 — Gateway InternalTokenGlobalFilter 校验
             "Content-Type": "application/json",  # 请求体格式为 JSON — 对应 Java @RequestBody
+            TRACE_HEADER: get_trace_id(),
         }
 
     def _base(self) -> str:  # 返回 Gateway 基础 URL — 去掉尾部斜杠避免双斜杠
@@ -84,29 +96,50 @@ class JavaInternalClient:  # Java 内部只读 API 客户端 — 类比 @FeignCl
     async def post_json(self, path: str, body: dict | None = None) -> Any:  # 通用 POST JSON — 解析 Java ResponseVO 并返回 data
 
         url = f"{self._base()}/{path.lstrip('/')}"  # 拼接完整 URL — path 去掉Leading / 防止 //
-        try:  # try-except 捕获网络层异常 — 超时、连接拒绝、DNS 失败等
-            # async with ~ try-with-resources：退出 with 块自动关闭 AsyncClient 连接池
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                resp = await client.post(url, json=body or {}, headers=self._headers())  # POST JSON 请求体 — body 为 None 则发 {}
-                resp.raise_for_status()  # HTTP 状态码非 2xx 时抛 httpx.HTTPStatusError — 类似 RestTemplate 抛异常
-                payload = resp.json()  # 解析响应体 JSON → Python dict — 对应 Java ResponseVO 结构
-        except Exception as e:  # 网络异常或 raise_for_status 抛出的 HTTPStatusError
-            logger.error("java_internal_http_failed", url=url, error=str(e))  # 记录失败 URL 和错误信息
-            raise  # 重新抛出 — 让上层 mcp_tools_service 决定如何包装为用户文案
-
-        if not isinstance(payload, dict):  # ResponseVO 必须是 Map 结构 — 否则格式非法
-            raise ValueError(f"invalid ResponseVO from {url}")  # ValueError ~ IllegalArgumentException
-
-        status = payload.get("status")  # 业务状态字段 — Java 侧通常为 "success" 或 "error"
-        code = payload.get("code", 200)  # HTTP 风格业务码 — 默认 200 表示成功
-
-        if status == "error" or (status is not None and status != "success"):  # 业务明确标记失败
-            raise ValueError(payload.get("info") or f"internal call failed: {url}")  # info 字段为用户可读错误信息
-
-        if status is None and code not in (200, "200", None):  # 兼容旧接口：仅有 code 无 status 字段
-            raise ValueError(payload.get("info") or f"internal call failed: {url}")
-
-        return payload.get("data")  # 成功时返回 data 字段 — 真正的业务数据（List 或 Map）
+        headers = self._headers()  # Never mutate a pooled client's auth/default headers.
+        started = time.perf_counter()
+        outcome = "cancelled"
+        try:
+            async with internal_http_client() as client:
+                # No automatic retries: this facade can also be used for internal writes.
+                resp = await client.post(url, json=body or {}, headers=headers, timeout=self._timeout)
+                resp.raise_for_status()
+                outcome = "invalid_response"
+                try:
+                    payload = resp.json()
+                except ValueError as exc:
+                    raise JavaInternalResponseError("Invalid Java ResponseVO") from exc
+            if not isinstance(payload, dict):
+                raise JavaInternalResponseError("Invalid Java ResponseVO")
+            status = payload.get("status")
+            code = payload.get("code", 200)
+            if (status is not None and status != "success") or code not in (200, "200", None):
+                outcome = "business_denial"
+                raise JavaInternalBusinessError(payload.get("info") or "Java internal call rejected")
+            if "data" not in payload:
+                raise JavaInternalResponseError("Invalid Java ResponseVO")
+            outcome = "success"
+            return payload.get("data")
+        except httpx.TimeoutException:
+            outcome = "timeout"
+            raise
+        except httpx.HTTPStatusError:
+            outcome = "http_status"
+            raise
+        except httpx.TransportError:
+            outcome = "transport"
+            raise
+        except ValueError:
+            if outcome not in ("business_denial", "invalid_response"):
+                outcome = "invalid_response"
+            raise
+        except Exception:
+            outcome = "internal_error"
+            raise
+        finally:
+            # Deliberately omit URL, request/response bodies, tokens, user IDs and str(exc).
+            logger.info("java_internal_call_finished", stage="java_internal", trace_id=headers[TRACE_HEADER],
+                        elapsed_ms=round((time.perf_counter()-started)*1000, 3), outcome=outcome)
 
     async def list_orders(
         self,

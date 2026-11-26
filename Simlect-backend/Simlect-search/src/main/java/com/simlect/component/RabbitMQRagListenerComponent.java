@@ -52,52 +52,18 @@ public class RabbitMQRagListenerComponent {
     @Resource
     private MqConsumeFailureRecorder mqConsumeFailureRecorder;
 
-    @RabbitListener(queues = RabbitMQConfig.RAG_QUEUE, ackMode = "MANUAL")
+    @RabbitListener(queues = RabbitMQConfig.RAG_QUEUE, ackMode = "MANUAL", autoStartup = "${VECTOR_SEARCH_ENABLED:true}")
     public void handleRagData(RagDataDTO ragDataDTO, Channel channel, Message message) throws IOException {
-        long deliveryTag = message.getMessageProperties().getDeliveryTag();
-        if (!mqListenerHelper.tryBeginConsume(message, MqListenerHelper.CONSUME_IDEMPOTENCY_TTL_HIGH_SECONDS)) {
-            channel.basicAck(deliveryTag, false);
-            return;
-        }
-        if (ragDataDTO == null) {
-            log.error("RAG同步失败，数据为空");
-            mqConsumeFailureRecorder.record(RabbitMQConfig.RAG_QUEUE, message, null,
-                    new BusinessException("RAG 消息体为空"));
-            channel.basicNack(deliveryTag, false, false);
-            return;
-        }
-        try {
-            if (ragDataDTO.getDataId() == null) {
-                log.warn("获取到的dataId为空，跳过处理");
-                mqConsumeFailureRecorder.record(RabbitMQConfig.RAG_QUEUE, message, ragDataDTO,
-                        new BusinessException("RAG dataId 为空"));
-                channel.basicNack(deliveryTag, false, false);
-                return;
+        mqListenerHelper.consumeInbox(RabbitMQConfig.RAG_QUEUE,"RAG_SYNC",message,channel,ragDataDTO,() -> {
+            if (ragDataDTO==null || ragDataDTO.getDataId()==null)
+                throw new MqConsumerIdempotencyHelper.InvalidEventException("RAG 消息或 dataId 缺失");
+            RagDataTypeEnum type=RagDataTypeEnum.getByType(ragDataDTO.getType());
+            if (type==null) throw new MqConsumerIdempotencyHelper.InvalidEventException("未知 RAG 类型");
+            switch (type) {
+                case PRODUCT -> save2vectorDB4Product(ragDataDTO.getDataId());
+                case FAQ -> save2vectorDB4FAQ(ragDataDTO.getDataId());
             }
-            RagDataTypeEnum ragDataTypeEnum = RagDataTypeEnum.getByType(ragDataDTO.getType());
-            if (ragDataTypeEnum == null) {
-                log.error("未知的数据类型: {}", ragDataDTO.getType());
-                mqConsumeFailureRecorder.record(RabbitMQConfig.RAG_QUEUE, message, ragDataDTO,
-                        new BusinessException("未知 RAG 类型"));
-                channel.basicNack(deliveryTag, false, false);
-                return;
-            }
-            switch (ragDataTypeEnum) {
-                case PRODUCT:
-                    save2vectorDB4Product(ragDataDTO.getDataId());
-                    mqListenerHelper.clearConsumeRetry(RabbitMQConfig.RAG_QUEUE, message);
-                    channel.basicAck(deliveryTag, false);
-                    return;
-                case FAQ:
-                    save2vectorDB4FAQ(ragDataDTO.getDataId());
-                    mqListenerHelper.clearConsumeRetry(RabbitMQConfig.RAG_QUEUE, message);
-                    channel.basicAck(deliveryTag, false);
-            }
-        } catch (Exception e) {
-            log.error("RAG同步失败", e);
-            mqListenerHelper.nackWithRetryOrDlq(channel, deliveryTag, message,
-                    RabbitMQConfig.RAG_QUEUE, ragDataDTO, e);
-        }
+        });
     }
     private void save2vectorDB4FAQ(String dataId) {
         String documentId = RagDataTypeEnum.FAQ.getType() + dataId;
@@ -116,8 +82,7 @@ public class RabbitMQRagListenerComponent {
         }
         List<Document> documentList = new ArrayList<>();
         Map<String, Object> metaData = new HashMap<>();
-        // 先删除旧数据，再新增（不存在也不会报错）
-        vectorStore.delete(List.of(documentId));
+        // Stable document ID is upserted only after embedding succeeds; retain old FAQ on failure.
         metaData.put("questionId", dataId);
         metaData.put("dataType",RagDataTypeEnum.FAQ.getType());
         metaData.put("question", ragQuestion.getQuestion());
@@ -152,7 +117,7 @@ public class RabbitMQRagListenerComponent {
         ProductRagIndexVO productInfo = productFeignSupport.getRagIndex(productId);
         if (productInfo == null) {
             // 商品不存在 → 全部删掉
-            deleteByPrefix(prefixId);
+            deleteByPrefix(productId);
             return;
         }
         // 先收集所有要写入的文档 ID

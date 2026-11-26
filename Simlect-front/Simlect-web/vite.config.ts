@@ -31,9 +31,9 @@ export default defineConfig(({ mode }) => {
           'pwa/splash-iphone-16-pro-max.png'
         ],
         manifest: {
-          name: '简选 Simlect',
-          short_name: '简选',
-          description: '简选 - 精选好物，品质生活',
+          name: '基于 AI Agent 的微服务电商平台',
+          short_name: 'AI 商城',
+          description: '基于 AI Agent 的微服务电商平台，支持智能导购与受控售后服务',
           theme_color: '#1d1d1f',
           background_color: '#ffffff',
           display: 'standalone',
@@ -100,11 +100,12 @@ export default defineConfig(({ mode }) => {
       proxy: {
         '/api/agent': {
           target: agentTarget,
-          changeOrigin: true
+          // Preserve the browser-facing Host for Gateway Origin validation.
+          changeOrigin: false
         },
         '/api': {
           target: apiTarget,
-          changeOrigin: true
+          changeOrigin: false
         },
         '/ws': {
           target: wsTarget,

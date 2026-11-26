@@ -3,6 +3,7 @@
 **/dist/
 **/build/
 *.class
+replay_pid*
 *.jar
 *.war
 *.ear
@@ -60,8 +61,30 @@ coverage/
 **/Simlect-agent/.venv/
 **/Simlect-agent/.pytest_cache/
 **/Simlect-agent/.langgraph_api/
-# 备份 / 构建产物（禁止入库）
+# 澶囦唤 / 鏋勫缓浜х墿锛堢姝㈠叆搴擄級
 *.bak
 *.tar.gz
 *.tgz
 *.zip.bak
+
+!deploy/.env.local.example
+
+# Local database backups and recovery disks (never commit)
+/backups/
+/local-data/
+*.vhdx
+
+/data/public-catalog/cache/
+
+# Runtime evaluation outputs may contain local requests and account data.
+/evals/reports/
+
+# Local keys and developer overrides
+*.key
+*.pfx
+*.jks
+*.keystore
+*.crt
+**/application-local.properties
+**/application-local.yml
+**/application-local.yaml

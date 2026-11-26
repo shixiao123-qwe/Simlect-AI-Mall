@@ -149,6 +149,7 @@ const menuList = ref([
     opened: true,
     children: [
       { name: '订单管理', path: '/order/orderList' },
+      { name: '售后审核', path: '/order/afterSale' },
       { name: '订单评论', path: '/order/comment' },
       { name: '举报管理', path: '/order/report' },
       { name: '图片违规复核', path: '/setting/imageModeration' },

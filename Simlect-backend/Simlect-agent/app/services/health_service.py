@@ -39,19 +39,21 @@ class HealthService:  # 健康检查服务类 — 类似 Java @Service HealthSer
         try:  # try 块 — 探测 Elasticsearch
             async with httpx.AsyncClient(timeout=3) as client:  # with 类似 try-with-resources
                 resp = await client.get(f"{settings.es_hosts.split(',')[0].rstrip('/')}/")  # 请求 ES 根路径
-                checks["elasticsearch"] = resp.status_code < 500  # HTTP 5xx 视为不可用
+                checks["elasticsearch"] = 200 <= resp.status_code < 300
         except Exception as e:  # ES 不可用时降级
             logger.warning("health_es_failed", error=str(e))
             checks["status"] = "degraded"
 
         try:  # try 块 — 探测 Java Web 网关
             async with httpx.AsyncClient(timeout=3) as client:
-                resp = await client.get(f"{settings.java_web_url.rstrip('/')}/api/")  # 请求 Java API 根路径
-                checks["java_web"] = resp.status_code < 500  # 非 5xx 视为可用
+                resp = await client.get(f"{settings.java_web_url.rstrip('/')}/actuator/health")  # 请求 Java API 根路径
+                checks["java_web"] = resp.status_code == 200 and resp.json().get("status") == "UP"
         except Exception as e:  # Java Web 不可用时降级
             logger.warning("health_java_web_failed", error=str(e))
             checks["status"] = "degraded"
 
+        if not checks["elasticsearch"] or not checks["java_web"]:
+            checks["status"] = "degraded"
         if not checks["redis"] or not checks["mysql"]:  # 核心依赖 Redis/MySQL 任一失败
             checks["status"] = "unhealthy"  # 整体状态标记为 unhealthy
         return checks  # 返回检查结果 Map

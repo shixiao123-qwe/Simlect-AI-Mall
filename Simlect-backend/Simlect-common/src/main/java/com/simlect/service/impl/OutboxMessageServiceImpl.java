@@ -16,7 +16,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.Arrays;
+import java.util.UUID;
+import org.springframework.beans.factory.annotation.Value;
+import jakarta.annotation.PostConstruct;
 import java.util.Date;
 import java.util.List;
 
@@ -29,6 +31,25 @@ public class OutboxMessageServiceImpl implements OutboxMessageService {
     @Lazy
     @Resource
     private ReliableMessageSender reliableMessageSender;
+
+    // A fresh token for every claim fences older attempts, including attempts on this JVM.
+    private final String instanceId = UUID.randomUUID().toString().replace("-", "");
+    @Value("${mq.outbox.lease-seconds:60}")
+    private int leaseSeconds = 60;
+    @Value("${mq.outbox.dispatch-max-retries:10}")
+    private int maxAttempts = 10;
+    @Value("${mq.outbox.backoff-base-seconds:2}")
+    private int backoffBaseSeconds = 2;
+    @Value("${mq.outbox.backoff-max-seconds:300}")
+    private int backoffMaxSeconds = 300;
+
+    @PostConstruct
+    public void validateSettings() {
+        if (leaseSeconds < 1 || leaseSeconds > 3600 || maxAttempts < 1 || maxAttempts > 1000
+                || backoffBaseSeconds < 1 || backoffMaxSeconds < backoffBaseSeconds || backoffMaxSeconds > 86400) {
+            throw new IllegalArgumentException("Invalid Outbox lease/retry/backoff settings");
+        }
+    }
 
     @Override
     public Long savePending(String exchange, String routingKey, Object payload,
@@ -65,78 +86,62 @@ public class OutboxMessageServiceImpl implements OutboxMessageService {
     @Override
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public void tryDispatch(Long id) {
-        if (id == null) {
-            return;
-        }
+        dispatch(id, maxAttempts);
+    }
+
+    private boolean dispatch(Long id, int attemptLimit) {
+        if (id == null) return false;
+        String owner = instanceId + ":" + UUID.randomUUID().toString().replace("-", "");
+        if (!Integer.valueOf(1).equals(localMessageOutboxMapper.claimLease(id, owner, leaseSeconds,
+                attemptLimit, backoffBaseSeconds, backoffMaxSeconds))) return false;
+        // Claim is an autocommit conditional UPDATE, not an uncommitted lock around broker IO.
         LocalMessageOutbox row = localMessageOutboxMapper.selectById(id);
-        if (row == null) {
-            return;
-        }
-        Integer status = row.getStatus();
-        if (OutboxMessageStatusEnum.SENT.getStatus().equals(status)
-                || OutboxMessageStatusEnum.SENDING.getStatus().equals(status)) {
-            return;
-        }
-        Integer from = status;
-        Integer claimed = localMessageOutboxMapper.updateStatus(
-                id, from, OutboxMessageStatusEnum.SENDING.getStatus(), null, null, false);
-        if (claimed == null || claimed != 1) {
-            return;
-        }
+        if (row == null || !owner.equals(row.getLeaseOwner())
+                || !Integer.valueOf(1).equals(localMessageOutboxMapper.ownsLease(id, owner))) return false;
         try {
-            Object payload = JsonUtils.parse(row.getPayloadJson());
-            MessageReliabilityLevelEnum level = MessageReliabilityLevelEnum.STANDARD;
-            if (MessageReliabilityLevelEnum.HIGH.getCode().equalsIgnoreCase(row.getReliabilityLevel())) {
-                level = MessageReliabilityLevelEnum.HIGH;
+            reliableMessageSender.sendOutboxWithConfirm(row.getExchangeName(), row.getRoutingKey(),
+                    JsonUtils.parse(row.getPayloadJson()), row.getIdempotencyKey(), owner);
+        } catch (Exception error) {
+            log.warn("Outbox publish failed id={}, attempt={}", id, row.getRetryCount(), error);
+            finish(id, owner, false, truncate(error.getMessage()));
+            if (row.getRetryCount() != null && row.getRetryCount() >= attemptLimit) {
+                log.error("OUTBOX_RETRIES_EXHAUSTED id={}, key={}, manual review required", id, row.getIdempotencyKey());
             }
-            // 重放路径：同步 Confirm，避免 HIGH 异步假成功
-            reliableMessageSender.replaySend(
-                    row.getExchangeName(), row.getRoutingKey(), payload, row.getIdempotencyKey());
-            localMessageOutboxMapper.updateStatus(
-                    id, OutboxMessageStatusEnum.SENDING.getStatus(),
-                    OutboxMessageStatusEnum.SENT.getStatus(), null, new Date(), false);
-        } catch (Exception e) {
-            log.error("Outbox 投递失败 id={}, key={}", id, row.getIdempotencyKey(), e);
-            localMessageOutboxMapper.updateStatus(
-                    id, OutboxMessageStatusEnum.SENDING.getStatus(),
-                    OutboxMessageStatusEnum.FAILED.getStatus(),
-                    truncate(e.getMessage()), null, true);
+            return false;
         }
+        // A failed SENT write leaves a leased SENDING row. Recovery republishes with the SAME business key.
+        return finish(id, owner, true, null);
+    }
+
+    private boolean finish(Long id, String owner, boolean sent, String error) {
+        try {
+            if (Integer.valueOf(1).equals(localMessageOutboxMapper.completeLease(id, owner, sent, error,
+                    backoffBaseSeconds, backoffMaxSeconds))) return sent;
+            log.warn("Outbox result ignored after lease loss id={}, sent={}", id, sent);
+        } catch (Exception databaseError) {
+            log.error("OUTBOX_RESULT_UNKNOWN id={}, sent={}, lease recovery/manual review required", id, sent, databaseError);
+        }
+        return false;
     }
 
     @Override
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public int dispatchPendingBatch(int batchSize, int maxRetries) {
-        if (batchSize <= 0) {
-            batchSize = 20;
-        }
-        // 避开刚写入、即将由 afterCommit 处理的记录
-        Date before = new Date(System.currentTimeMillis() - 3000L);
-        List<LocalMessageOutbox> list = localMessageOutboxMapper.selectDispatchBatch(
-                Arrays.asList(
-                        OutboxMessageStatusEnum.PENDING.getStatus(),
-                        OutboxMessageStatusEnum.FAILED.getStatus()),
-                before,
-                batchSize);
-        if (list == null || list.isEmpty()) {
-            return 0;
-        }
-        int ok = 0;
-        for (LocalMessageOutbox row : list) {
-            int retry = row.getRetryCount() == null ? 0 : row.getRetryCount();
-            if (retry >= maxRetries) {
-                continue;
-            }
+        int limit = batchSize <= 0 ? 20 : Math.min(batchSize, 1000);
+        int attemptLimit = maxRetries <= 0 ? maxAttempts : Math.min(maxAttempts, maxRetries);
+        int exhausted = localMessageOutboxMapper.expireExhausted(limit, attemptLimit, leaseSeconds);
+        if (exhausted > 0) log.error("OUTBOX_RETRIES_EXHAUSTED expired leases={}, manual review required", exhausted);
+        List<LocalMessageOutbox> rows = localMessageOutboxMapper.selectReadyBatch(limit, attemptLimit, leaseSeconds);
+        if (rows == null) return 0;
+        int sent = 0;
+        for (LocalMessageOutbox row : rows) {
             try {
-                tryDispatch(row.getId());
-                LocalMessageOutbox after = localMessageOutboxMapper.selectById(row.getId());
-                if (after != null && OutboxMessageStatusEnum.SENT.getStatus().equals(after.getStatus())) {
-                    ok++;
-                }
-            } catch (Exception e) {
-                log.warn("Outbox 批量投递异常 id={}", row.getId(), e);
+                if (dispatch(row.getId(), attemptLimit)) sent++;
+            } catch (Exception error) {
+                log.error("Outbox dispatch unavailable id={}", row.getId(), error);
             }
         }
-        return ok;
+        return sent;
     }
 
     private static String truncate(String msg) {

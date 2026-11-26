@@ -9,5 +9,7 @@ public enum OrderStateEvent {
     CONFIRM_RECEIPT,
     PARTIAL_REFUND,
     FULL_REFUND,
+    AFTER_SALE_FULL_REFUND,
+    AFTER_SALE_PARTIAL_REFUND,
     DELETE
 }

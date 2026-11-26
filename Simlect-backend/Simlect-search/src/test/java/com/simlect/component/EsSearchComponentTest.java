@@ -138,7 +138,7 @@ class EsSearchComponentTest {
                 esSearchComponent.searchProducts("短", null, null, null, null, null);
 
         assertEquals(1, result.getPageNo());
-        // 短词（<=2 字）走精准+匹配+通配三路 OR 条件
+        // Short words use the same analyzed-text and keyword-subfield query strategy.
         verify(elasticsearchOperations).search(any(CriteriaQuery.class), eq(ProductInfoDTO.class));
     }
 

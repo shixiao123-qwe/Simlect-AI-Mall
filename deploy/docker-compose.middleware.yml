@@ -10,7 +10,7 @@ services:
     container_name: simlect-mysql
     networks: [simlect-net]
     ports:
-      - "3306:3306"
+      - "127.0.0.1:3306:3306"
     environment:
       MYSQL_ROOT_PASSWORD: root
       TZ: Asia/Shanghai
@@ -18,11 +18,11 @@ services:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_general_ci
       - --default-authentication-plugin=caching_sha2_password
-      - --innodb_buffer_pool_size=1G
-      - --max_connections=300
+      - --innodb_buffer_pool_size=128M
+      - --max_connections=150
     volumes:
       - simlect_mysql:/var/lib/mysql
-    mem_limit: 2g
+    mem_limit: 768m
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
       interval: 10s
@@ -35,18 +35,18 @@ services:
     container_name: simlect-redis
     networks: [simlect-net]
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     command:
       - redis-server
       - --appendonly
       - "yes"
       - --maxmemory
-      - 512mb
+      - 256mb
       - --maxmemory-policy
       - allkeys-lru
     volumes:
       - simlect_redis:/data
-    mem_limit: 640m
+    mem_limit: 384m
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -59,16 +59,17 @@ services:
     container_name: simlect-rabbitmq
     networks: [simlect-net]
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
     environment:
       RABBITMQ_DEFAULT_USER: simlect
       RABBITMQ_DEFAULT_PASS: simlect
       RABBITMQ_DEFAULT_VHOST: /
-      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "-memory 1024M"
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "+S 2:2"
     volumes:
       - simlect_rabbit:/var/lib/rabbitmq
-    mem_limit: 1536m
+      - ./rabbitmq/low-memory.conf:/etc/rabbitmq/conf.d/20-low-memory.conf:ro
+    mem_limit: 768m
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 15s
@@ -81,16 +82,17 @@ services:
     container_name: simlect-nacos
     networks: [simlect-net]
     ports:
-      - "8848:8848"
-      - "9848:9848"
+      - "127.0.0.1:8848:8848"
+      - "127.0.0.1:9848:9848"
     depends_on:
       mysql:
         condition: service_healthy
     environment:
       MODE: standalone
       PREFER_HOST_MODE: hostname
-      JVM_XMS: 512m
-      JVM_XMX: 1024m
+      JVM_XMS: 128m
+      JVM_XMX: 384m
+      JVM_XMN: 128m
       NACOS_AUTH_ENABLE: "false"
       SPRING_DATASOURCE_PLATFORM: mysql
       MYSQL_SERVICE_HOST: mysql
@@ -99,7 +101,7 @@ services:
       MYSQL_SERVICE_USER: root
       MYSQL_SERVICE_PASSWORD: root
       MYSQL_SERVICE_DB_PARAM: characterEncoding=utf8&connectTimeout=10000&socketTimeout=30000&autoReconnect=true&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
-    mem_limit: 1536m
+    mem_limit: 768m
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:8848/nacos/"]
       interval: 15s
@@ -116,17 +118,17 @@ services:
     container_name: simlect-es
     networks: [simlect-net]
     ports:
-      - "9200:9200"
+      - "127.0.0.1:9200:9200"
     environment:
       discovery.type: single-node
       xpack.security.enabled: "false"
       xpack.security.http.ssl.enabled: "false"
-      ES_JAVA_OPTS: -Xms1g -Xmx2g
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
       cluster.name: simlect-es
       bootstrap.memory_lock: "false"
     volumes:
       - simlect_es:/usr/share/elasticsearch/data
-    mem_limit: 3g
+    mem_limit: 1280m
     ulimits:
       memlock:
         soft: -1
@@ -147,7 +149,7 @@ services:
     container_name: simlect-sentinel
     networks: [simlect-net]
     ports:
-      - "8858:8858"
+      - "127.0.0.1:8858:8858"
     environment:
       JAVA_OPT_EXT: "-Xms256m -Xmx512m -Dserver.port=8858 -Dcsp.sentinel.dashboard.server=localhost:8858"
     mem_limit: 768m
@@ -161,8 +163,8 @@ services:
     container_name: simlect-seata
     networks: [simlect-net]
     ports:
-      - "8091:8091"
-      - "7091:7091"
+      - "127.0.0.1:8091:8091"
+      - "127.0.0.1:7091:7091"
     depends_on:
       mysql:
         condition: service_healthy

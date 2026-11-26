@@ -23,6 +23,9 @@ export function usePaymentPage(mode: PaymentPageMode = 'mobile') {
   const payHtml = ref('');
   const payLaunched = ref(false);
   const paySuccess = ref(false);
+  const localDemo = ref(false);
+  const demoPayLoading = ref(false);
+  const demoPaid = ref(false);
   const launching = ref(false);
   const reopening = ref(false);
   const checking = ref(false);
@@ -45,7 +48,10 @@ export function usePaymentPage(mode: PaymentPageMode = 'mobile') {
   };
 
   const showPaidSuccess = (info?: Record<string, any> | null) => {
-    if (info) orderInfo.value = info;
+    if (info) {
+      orderInfo.value = info;
+      demoPaid.value = String(info.channelOrderId || '').startsWith('LOCAL_DEMO_');
+    }
     paySuccess.value = true;
     payLaunched.value = false;
     markPaySuccess(payOrderId());
@@ -108,6 +114,7 @@ export function usePaymentPage(mode: PaymentPageMode = 'mobile') {
 
     launching.value = true;
     loadError.value = '';
+    localDemo.value = false;
     isProcessing.value = false;
     try {
       if (await loadOrder()) return;
@@ -119,6 +126,11 @@ export function usePaymentPage(mode: PaymentPageMode = 'mobile') {
 
       const data = await orderApi.getPayInfo(payLookupId());
       const html = data?.payInfo;
+      if (!html && data?.payOrderId && import.meta.env.DEV && import.meta.env.VITE_PAY_LOCAL_MOCK_ENABLED === 'true') {
+        localDemo.value = true;
+        payAmount.value = resolvePayAmount(data?.amount, orderInfo.value);
+        return;
+      }
       if (!html) {
         loadError.value = '获取支付信息失败，请稍后重试';
         return;
@@ -137,6 +149,22 @@ export function usePaymentPage(mode: PaymentPageMode = 'mobile') {
       loadError.value = e?.info || '获取支付信息失败';
     } finally {
       launching.value = false;
+    }
+  };
+
+  const confirmDemoPayment = async () => {
+    if (!localDemo.value || demoPayLoading.value) return;
+    demoPayLoading.value = true;
+    try {
+      const result = await orderApi.confirmLocalDemoPayment(payOrderId());
+      if (!result?.simulated) throw new Error('模拟付款响应异常');
+      if (!(await loadOrder())) throw new Error('结果待核实，请查看我的订单');
+      demoPaid.value = true;
+      toast.success('模拟付款成功，未发生真实扣款');
+    } catch (e: any) {
+      toast.error(e?.info || e?.message || '模拟付款失败，请查看订单状态');
+    } finally {
+      demoPayLoading.value = false;
     }
   };
 
@@ -278,6 +306,10 @@ export function usePaymentPage(mode: PaymentPageMode = 'mobile') {
     payAmount,
     payLaunched,
     paySuccess,
+    localDemo,
+    demoPayLoading,
+    demoPaid,
+    confirmDemoPayment,
     launching,
     reopening,
     checking,

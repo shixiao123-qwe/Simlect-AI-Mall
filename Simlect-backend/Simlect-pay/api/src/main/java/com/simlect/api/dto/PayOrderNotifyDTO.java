@@ -2,6 +2,10 @@ package com.simlect.api.dto;
 
 import java.math.BigDecimal;
 
+/** Normalized successful payment result, not a binding model for the external signed form.
+ * Callback parsing and SDK query parsing have separate validation boundaries; both must
+ * supply an amount before order-side processing. No query-source flag can bypass validation.
+ */
 public class PayOrderNotifyDTO {
 
     private String payOrderId;
@@ -17,6 +21,11 @@ public class PayOrderNotifyDTO {
     public PayOrderNotifyDTO(String payOrderId, String channelOrderId) {
         this.payOrderId = payOrderId;
         this.channelOrderId = channelOrderId;
+    }
+
+    public PayOrderNotifyDTO(String payOrderId, String channelOrderId, BigDecimal totalAmount) {
+        this(payOrderId, channelOrderId);
+        this.totalAmount = totalAmount;
     }
 
     public String getPayOrderId() {

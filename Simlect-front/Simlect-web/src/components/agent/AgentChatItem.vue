@@ -16,14 +16,15 @@
       <template v-else>
       <!-- [zh] SFC 区块开始（单文件组件 template/script/style 三段） -->
       <template v-if="productList?.length">
+        <AgentShoppingEvidence v-if="shoppingEvidence" :list="productList" :meta="shoppingEvidence" />
         <!-- [zh] 开始标签 `<MarkdownContent>` -->
         <MarkdownContent
-          v-if="productIntro"
+          v-if="productIntro && !shoppingEvidence"
           class="product-intro"
           :content="productIntro"
         />
         <!-- [zh] 开始标签 `<p>` -->
-        <p v-else class="biz-title">为您推荐以下商品</p>
+        <p v-else-if="!shoppingEvidence" class="biz-title">为您推荐以下商品</p>
         <!-- [zh] 开始标签 `<AgentProductList>` -->
         <AgentProductList :list="productList" />
       </template>
@@ -84,6 +85,7 @@
 import { computed, ref, watch } from 'vue';
 import { Service } from '@element-plus/icons-vue';
 import MarkdownContent from '@/components/common/MarkdownContent.vue';
+import AgentShoppingEvidence from '@/components/agent/AgentShoppingEvidence.vue';
 import AgentProductList from '@/components/agent/AgentProductList.vue';
 import AgentOrderList from '@/components/agent/AgentOrderList.vue';
 import AgentConfirmCard, { type ActionConfirmCardData } from '@/components/agent/AgentConfirmCard.vue';
@@ -208,6 +210,8 @@ const productList = computed(() => {
   if (usable[0]?.productId && usable[0]?.productName) return usable;
   return null;
 });
+
+const shoppingEvidence = computed(() => { const meta = productList.value?.[0]?.shopping; return meta && ['recommend','compare'].includes(meta.mode) ? meta : null; });
 
 const productIntro = computed(() =>
   stripEmbeddedProductJson(productSearchPayload.value?.intro || '')

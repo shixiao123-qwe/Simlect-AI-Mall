@@ -47,6 +47,7 @@ from __future__ import annotations  # import：延迟类型注解 — 函数参�
 
 import hmac  # import：常量时间比较 — 校验 X-Internal-Token 防时序侧信道
 import os  # import：读取环境变量 FASTMCP_HOST / FASTMCP_PORT 及监听地址
+from dataclasses import replace
 from collections.abc import AsyncIterator  # import：异步生成器类型注解 — lifespan yield 的返回类型
 from contextlib import asynccontextmanager  # import：装饰器 — 将 async generator 包装为 async context manager
 from typing import Any  # import：ASGI 中间件签名用 — scope/receive/send
@@ -58,6 +59,8 @@ from app.services import mcp_tools_service as tools  # import：业务工具实�
 from app.services.redis_service import redis_service  # import：Redis 连接服务 — PROPOSE_* 写提案卡需要
 from app.services.tool_invoke_result import ToolInvokeResult  # import：工具结果 DTO — to_wire() 序列化
 from app.config.settings import get_settings  # import：配置 — 启动时校验内部令牌（FailFast）
+from app.services.request_context import RequestTraceMiddleware
+from app.services.internal_http import ManagedInternalHttpASGI
 
 logger = structlog.get_logger()  # 获取本模块 logger 实例
 
@@ -141,11 +144,15 @@ mcp = FastMCP(  # 创建 FastMCP 应用实例 — 类比 Spring Boot @SpringBoot
 )
 
 
-def _text(result) -> str:  # 辅助函数：把业务层返回值统一序列化为 MCP 响应字符串
+def _text(result, *, structured: bool = False) -> str:
     """把 ToolInvokeResult 序列化成 MCP 线上字符串（含卡片等结构化信息）。"""
     if isinstance(result, ToolInvokeResult):  # isinstance ~ Java instanceof：若是结构化结果 DTO
+        if not structured and result.status == "success":
+            # Legacy handlers mix success/denial text; preserve UI without
+            # claiming an unclassified business result is a v2 success.
+            result = replace(result, status="legacy", legacy=True)
         return result.to_wire()  # 序列化为 Wire 格式 — 前缀 + JSON 卡片或纯文本
-    return str(result)  # 普通 str/int 等 — 直接转字符串返回给 MCP 客户端
+    return ToolInvokeResult(content=str(result), status="legacy", legacy=True).to_wire()
 
 
 @mcp.tool(name="SEARCH_PRODUCTS", description="[READ] 搜索/推荐商品")  # @mcp.tool 注册 MCP 工具 — name 须与 mcp/tools.py 一致
@@ -195,10 +202,10 @@ async def propose_confirm_receipt(userId: str, orderId: str) -> str:  # 确认�
 
 @mcp.tool(  # 注册退款提案工具
     name="PROPOSE_REFUND",  # 工具名
-    description="[WRITE] 退款提案；用户要退款时直接调用，不要先 QUERY_ORDERS",  # 语义描述 — 防止 LLM 先查订单
+    description="[PROPOSE ONLY] 兼容退款指引；需明确类型和原因后调用 CREATE_AFTER_SALE_REQUEST，确认只提交人工审核申请",  # 语义描述 — 防止 LLM 先查订单
 )
-async def propose_refund(userId: str, orderItemId: str) -> str:  # 退款提案 handler — [WRITE]
-    return _text(await tools.propose_refund(userId, orderItemId))  # 委托给业务层（只写提案卡）
+async def propose_refund(userId: str, orderItemId: str, type: str | None = None, reason: str | None = None) -> str:  # 退款提案 handler — [WRITE]
+    return _text(await tools.propose_refund(userId, orderItemId, type, reason))  # 委托给业务层（只写提案卡）
 
 
 @mcp.tool(  # 注册商品评价提案工具
@@ -223,10 +230,48 @@ async def propose_recomment(  # 追评提案 handler — [WRITE]
     return _text(await tools.propose_recomment(userId, orderId, reCommentContent))  # 委托给业务层
 
 
+@mcp.tool(name="RECOMMEND_PRODUCTS", description="[READ] 按结构化需求召回，并由Java核验SKU价格库存及硬约束")
+async def recommend_products(userId: str, requirements: dict) -> str:
+    from app.services.shopping_service import recommend
+    return _text(await recommend(requirements), structured=True)
+
+@mcp.tool(name="COMPARE_PRODUCTS", description="[READ] 比较已经展示的2至3款商品，缺失参数不猜测")
+async def compare_products(userId: str, productIds: list[str], preferences: list[str] | None = None,
+                           requirements: dict | None = None, skuHashes: dict | None = None) -> str:
+    from app.services.shopping_service import compare
+    return _text(await compare(productIds, preferences or [], requirements, skuHashes), structured=True)
+
+@mcp.tool(name="GET_ORDER_DETAIL", description="[READ] 查询本人订单详情及订单项ID")
+async def after_sale_order_detail(userId: str, orderId: str) -> str:
+    from app.services.after_sale_service import order_detail
+    return _text(await order_detail(userId,orderId))
+
+@mcp.tool(name="QUERY_AFTER_SALE_POLICY", description="[READ] 检索版本化售后政策并返回原文及来源；未知不猜测")
+async def after_sale_policy(userId: str, question: str) -> str:
+    from app.services.after_sale_policy import query_policy
+    return _text(query_policy(question))
+
+@mcp.tool(name="CHECK_AFTER_SALE_ELIGIBILITY", description="[READ] Java校验本人订单项的售后申请资格，不代表退款批准")
+async def after_sale_check(userId: str, orderItemId: str, type: str) -> str:
+    from app.services.after_sale_service import check
+    return _text(await check(userId,orderItemId,type))
+
+@mcp.tool(name="CREATE_AFTER_SALE_REQUEST", description="[PROPOSE ONLY] 仅生成售后申请确认卡；用户确认后才调Java提交待审核申请")
+async def after_sale_propose(userId: str, orderItemId: str, type: str, reason: str) -> str:
+    from app.services.after_sale_service import propose
+    return _text(await propose(userId,orderItemId,type,reason))
+
+
+@mcp.tool(name="QUERY_AFTER_SALE_REQUESTS", description="[READ] 查看本人售后申请进度；不批准、不执行退款")
+async def after_sale_requests(userId: str) -> str:
+    from app.services.after_sale_service import request_progress
+    return _text(await request_progress(userId))
+
+
 def main() -> None:  # 进程入口函数 — python -m app.mcp_server 时调用
     # 构造 FastMCP 的 Streamable HTTP ASGI app，外包令牌鉴权中间件后交给 uvicorn
     inner = mcp.streamable_http_app() if hasattr(mcp, "streamable_http_app") else mcp.http_app()  # 兼容新旧 SDK API
-    app = _InternalTokenMiddleware(inner, get_settings().internal_token)  # 包上令牌中间件（X-Internal-Token）
+    app = RequestTraceMiddleware(ManagedInternalHttpASGI(_InternalTokenMiddleware(inner, get_settings().internal_token)))
     import uvicorn  # 延迟 import — 仅启动进程时需要
 
     uvicorn.run(app, host=_MCP_HOST, port=_MCP_PORT, log_level="warning")  # 启动 uvicorn — 监听 /mcp 路径

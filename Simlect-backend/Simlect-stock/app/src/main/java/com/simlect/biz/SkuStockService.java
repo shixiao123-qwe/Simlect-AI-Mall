@@ -20,6 +20,14 @@ import java.util.TreeMap;
 
 @Service
 public class SkuStockService {
+    public List<SkuStockDTO> readBatch(List<String> ids) {
+        if (ids == null || ids.isEmpty() || ids.size() > 50 || ids.stream().anyMatch(id -> id == null || id.isBlank() || id.length()>15)) {
+            throw new BusinessException("库存批量查询商品数量必须为1至50");
+        }
+        List<SkuStock> rows = skuStockMapper.selectByProductIds(ids.stream().distinct().toList());
+        if (rows.size()>5000) throw new BusinessException("候选SKU过多，请缩小查询范围");
+        return rows.stream().map(r -> new SkuStockDTO(r.getProductId(), r.getPropertyValueIdHash(), r.getStock())).toList();
+    }
 
     @Resource
     private SkuStockMapper skuStockMapper;

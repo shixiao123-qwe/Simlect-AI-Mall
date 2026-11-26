@@ -39,17 +39,18 @@ class OutboxDispatchTaskTest {
     }
 
     @Test
-    void dispatch_lockNotAcquired_skipsServiceCall() {
-        when(redisComponent.setIfAbsent(LOCK_KEY, "1", 4, TimeUnit.SECONDS)).thenReturn(false);
+    void dispatchDoesNotDependOnSharedRedisLock() {
+
 
         task.dispatch();
 
-        verify(outboxMessageService, never()).dispatchPendingBatch(anyInt(), anyInt());
+        verify(outboxMessageService).dispatchPendingBatch(30, 10);
+        org.mockito.Mockito.verifyNoInteractions(redisComponent);
     }
 
     @Test
     void dispatch_lockAcquired_dispatchesPending() {
-        when(redisComponent.setIfAbsent(LOCK_KEY, "1", 4, TimeUnit.SECONDS)).thenReturn(true);
+
         when(outboxMessageService.dispatchPendingBatch(30, 10)).thenReturn(5);
 
         task.dispatch();
@@ -59,7 +60,7 @@ class OutboxDispatchTaskTest {
 
     @Test
     void dispatch_lockAcquired_zeroDispatched() {
-        when(redisComponent.setIfAbsent(LOCK_KEY, "1", 4, TimeUnit.SECONDS)).thenReturn(true);
+
         when(outboxMessageService.dispatchPendingBatch(30, 10)).thenReturn(0);
 
         task.dispatch();
@@ -69,7 +70,7 @@ class OutboxDispatchTaskTest {
 
     @Test
     void dispatch_serviceThrows_exceptionSwallowed() {
-        when(redisComponent.setIfAbsent(LOCK_KEY, "1", 4, TimeUnit.SECONDS)).thenReturn(true);
+
         when(outboxMessageService.dispatchPendingBatch(30, 10))
                 .thenThrow(new RuntimeException("table not exists"));
 

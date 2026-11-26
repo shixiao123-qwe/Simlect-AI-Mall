@@ -17,6 +17,17 @@ public class LocalMessageOutbox implements Serializable {
     private Date createTime;
     private Date updateTime;
     private Date sentTime;
+    private String leaseOwner;
+    private Date leaseUntil;
+    private Date nextAttemptTime;
+
+    public String getLeaseOwner() { return leaseOwner; }
+    public void setLeaseOwner(String leaseOwner) { this.leaseOwner = leaseOwner; }
+    public Date getLeaseUntil() { return leaseUntil; }
+    public void setLeaseUntil(Date leaseUntil) { this.leaseUntil = leaseUntil; }
+    public Date getNextAttemptTime() { return nextAttemptTime; }
+    public void setNextAttemptTime(Date nextAttemptTime) { this.nextAttemptTime = nextAttemptTime; }
+
 
     public Long getId() {
         return id;
